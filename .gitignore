@@ -1,0 +1,14 @@
+node_modules/
+.npm-cache/
+.env
+.env.*
+!.env.example
+.venv/
+.venv-linux/
+coverage/
+dist/
+build/
+*.log
+.DS_Store
+.idea/
+.vscode/
