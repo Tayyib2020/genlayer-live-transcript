@@ -1,5 +1,28 @@
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  username_normalized TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_digest TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS auth_sessions_user_idx
+  ON auth_sessions (user_id);
+
+CREATE INDEX IF NOT EXISTS auth_sessions_expires_at_idx
+  ON auth_sessions (expires_at);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 160),
   source_url TEXT,
   status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'live', 'processing', 'completed', 'failed')),
@@ -8,6 +31,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE sessions
+  ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS sessions_user_created_at_idx
+  ON sessions (user_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS sessions_status_created_at_idx
   ON sessions (status, created_at DESC);

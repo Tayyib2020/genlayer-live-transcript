@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import SessionCard from "../components/SessionCard.jsx";
 import ErrorState from "../components/ErrorState.jsx";
+import { useAuth } from "../auth.jsx";
 
 const steps = [
   { number: "01", title: "Capture", copy: "Share the browser tab where a public livestream is playing." },
@@ -11,12 +12,20 @@ const steps = [
 ];
 
 export default function HomePage() {
+  const { user } = useAuth();
   const [sessions, setSessions] = useState([]);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api.listSessions("?status=completed&limit=3").then((data) => setSessions(data.sessions)).catch((err) => setError(err.message));
-  }, []);
+    if (!user) {
+      setSessions([]);
+      setError(null);
+      return undefined;
+    }
+    let active = true;
+    api.listSessions("?status=completed&limit=3").then((data) => { if (active) setSessions(data.sessions); }).catch((err) => { if (active) setError(err.message); });
+    return () => { active = false; };
+  }, [user]);
 
   return (
     <div className="container page-stack">
@@ -25,7 +34,7 @@ export default function HomePage() {
           <p className="eyebrow"><span className="eyebrow-dot" /> Community record layer</p>
           <h1>Turn live conversations into <em>records you can inspect.</em></h1>
           <p className="hero-lede">Signal Ledger captures public livestream audio, preserves the transcript, and prepares the evidence trail for summary-fidelity verification on GenLayer.</p>
-          <div className="hero-actions"><Link className="button button-primary" to="/new">Start Live Transcript <span aria-hidden="true">↗</span></Link><Link className="button button-quiet" to="/archive">Browse archive <span aria-hidden="true">→</span></Link></div>
+          <div className="hero-actions">{user ? <Link className="button button-primary" to="/new">Start Live Transcript <span aria-hidden="true">↗</span></Link> : <Link className="button button-primary" to="/login">Sign in to start <span aria-hidden="true">↗</span></Link>}<Link className="button button-quiet" to="/archive">Browse archive <span aria-hidden="true">→</span></Link></div>
           <p className="hero-note"><span className="mini-lock">◌</span> No wallet required to create a session.</p>
         </div>
         <div className="hero-visual" aria-label="Evidence trail preview">
@@ -45,7 +54,7 @@ export default function HomePage() {
 
       <section className="section-block archive-preview">
         <div className="section-heading"><div><p className="eyebrow">Recent archive</p><h2>Completed sessions, when they exist.</h2></div><Link className="text-link" to="/archive">View all <span aria-hidden="true">→</span></Link></div>
-        {error ? <ErrorState message={error} /> : sessions.length === 0 ? <div className="empty-card"><span className="empty-mark">＋</span><div><h3>No sessions yet.</h3><p>Create a session to capture real browser-tab audio, preserve finalized speech-to-text segments, generate a summary, and verify its fidelity with GenLayer.</p></div><Link className="button button-secondary" to="/new">Create session</Link></div> : <div className="session-grid">{sessions.map((session) => <SessionCard key={session.id} session={session} />)}</div>}
+        {!user ? <div className="empty-card"><span className="empty-mark">⌁</span><div><h3>Your archive is private.</h3><p>Sign in to view your completed Signal Ledger sessions.</p></div><Link className="button button-secondary" to="/login">Sign in</Link></div> : error ? <ErrorState message={error} /> : sessions.length === 0 ? <div className="empty-card"><span className="empty-mark">＋</span><div><h3>No sessions yet.</h3><p>Create a session to capture real browser-tab audio, preserve finalized speech-to-text segments, generate a summary, and verify its fidelity with GenLayer.</p></div><Link className="button button-secondary" to="/new">Create session</Link></div> : <div className="session-grid">{sessions.map((session) => <SessionCard key={session.id} session={session} />)}</div>}
       </section>
     </div>
   );

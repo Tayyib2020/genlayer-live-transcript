@@ -3,6 +3,8 @@ import cors from "cors";
 import express from "express";
 import http from "node:http";
 import sessionsRouter from "./routes/sessions.js";
+import authRouter from "./routes/auth.js";
+import { requireTrustedOrigin } from "./auth/auth.js";
 import { attachAudioWebSocketServer } from "./websocket/audioServer.js";
 
 const app = express();
@@ -27,13 +29,15 @@ function safeErrorDetails(error) {
 }
 
 app.disable("x-powered-by");
-app.use(cors({ origin: clientOrigin }));
+app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(express.json({ limit: "64kb" }));
+app.use(requireTrustedOrigin);
 
 app.get("/api/health", (_request, response) => {
   response.json({ ok: true, service: "genlayer-live-transcript-server" });
 });
 
+app.use("/api/auth", authRouter);
 app.use("/api/sessions", sessionsRouter);
 
 app.use((error, _request, response, _next) => {

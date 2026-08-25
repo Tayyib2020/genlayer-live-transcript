@@ -9,8 +9,10 @@ import { VerificationError, safeVerificationError } from "../genlayer/verificati
 import { listTranscriptSegments } from "../db/transcriptStore.js";
 import { createSessionSchema, parseSessionId } from "../utils/validation.js";
 import { closeSessionAudioStreams } from "../websocket/audioServer.js";
+import { requireAuth } from "../auth/auth.js";
 
 const router = express.Router();
+router.use(requireAuth);
 
 function mapSession(row) {
   if (!row) return null;
@@ -47,10 +49,10 @@ router.post("/", async (request, response, next) => {
   try {
     const { title, sourceUrl } = parsed.data;
     const result = await pool.query(
-      `INSERT INTO sessions (id, title, source_url)
-       VALUES ($1, $2, NULLIF($3, ''))
+      `INSERT INTO sessions (id, user_id, title, source_url)
+       VALUES ($1, $2, $3, NULLIF($4, ''))
        RETURNING *`,
-      [crypto.randomUUID(), title, sourceUrl ?? ""],
+      [crypto.randomUUID(), request.user.id, title, sourceUrl ?? ""],
     );
     return response.status(201).json({ session: mapSession(result.rows[0]) });
   } catch (error) {
@@ -62,12 +64,12 @@ router.get("/", async (request, response, next) => {
   try {
     const requestedStatus = typeof request.query.status === "string" ? request.query.status : null;
     const limit = Math.min(Math.max(Number.parseInt(request.query.limit ?? "50", 10) || 50, 1), 100);
-    const values = [];
-    let where = "";
+    const values = [request.user.id];
+    let where = "WHERE user_id = $1";
 
     if (requestedStatus) {
       values.push(requestedStatus);
-      where = "WHERE status = $1";
+      where += ` AND status = $${values.length}`;
     }
 
     values.push(limit);
@@ -88,13 +90,13 @@ router.get("/:id", async (request, response, next) => {
   }
 
   try {
-    const result = await pool.query("SELECT * FROM sessions WHERE id = $1", [request.params.id]);
+    const result = await pool.query("SELECT * FROM sessions WHERE id = $1 AND user_id = $2", [request.params.id, request.user.id]);
     if (result.rowCount === 0) return response.status(404).json({ error: "Session not found" });
     const [transcript, derivative, verification, verificationHistory] = await Promise.all([
       listTranscriptSegments(request.params.id),
       getSessionDerivative(request.params.id),
-      getSessionVerification(request.params.id),
-      getSessionVerificationHistory(request.params.id),
+      getSessionVerification(request.params.id, request.user.id),
+      getSessionVerificationHistory(request.params.id, request.user.id),
     ]);
     return response.json({
       session: mapSession(result.rows[0]),
@@ -117,11 +119,13 @@ router.post("/:id/start", async (request, response, next) => {
     const result = await pool.query(
       `UPDATE sessions
        SET status = 'live', started_at = COALESCE(started_at, NOW())
-       WHERE id = $1 AND status = 'created'
+       WHERE id = $1 AND user_id = $2 AND status = 'created'
        RETURNING *`,
-      [request.params.id],
+      [request.params.id, request.user.id],
     );
     if (result.rowCount === 0) {
+      const existing = await pool.query("SELECT id FROM sessions WHERE id = $1 AND user_id = $2", [request.params.id, request.user.id]);
+      if (existing.rowCount === 0) return response.status(404).json({ error: "Session not found" });
       return response.status(409).json({ error: "Session cannot be started from its current state" });
     }
     return response.json({ session: mapSession(result.rows[0]) });
@@ -138,9 +142,9 @@ router.post("/:id/stop", async (request, response, next) => {
     const result = await pool.query(
       `UPDATE sessions
        SET status = 'created', started_at = NULL, ended_at = NULL
-       WHERE id = $1 AND status = 'live'
+       WHERE id = $1 AND user_id = $2 AND status = 'live'
        RETURNING *`,
-      [request.params.id],
+      [request.params.id, request.user.id],
     );
     if (result.rowCount > 0) {
       closeSessionAudioStreams(request.params.id);
@@ -150,7 +154,7 @@ router.post("/:id/stop", async (request, response, next) => {
     // A browser track can emit `ended` while the application cleanup path is
     // also stopping the same session. Treat an already-created session as an
     // idempotent successful stop instead of returning a misleading conflict.
-    const existing = await pool.query("SELECT * FROM sessions WHERE id = $1", [request.params.id]);
+    const existing = await pool.query("SELECT * FROM sessions WHERE id = $1 AND user_id = $2", [request.params.id, request.user.id]);
     if (existing.rowCount === 0) return response.status(404).json({ error: "Session not found" });
     if (existing.rows[0].status === "created") {
       closeSessionAudioStreams(request.params.id);
@@ -167,7 +171,7 @@ router.post("/:id/complete", async (request, response, next) => {
   if (!parsedId.success) return response.status(400).json({ error: "Session id must be a UUID" });
 
   try {
-    const result = await completeSession(request.params.id);
+    const result = await completeSession(request.params.id, request.user.id);
     if (result.kind === "not_found") return response.status(404).json({ error: "Session not found" });
     if (result.kind === "no_transcript") {
       return response.status(409).json({ error: "Session cannot be completed until a finalized transcript segment is persisted" });
@@ -186,7 +190,7 @@ router.delete("/:id", async (request, response, next) => {
   if (!parsedId.success) return response.status(400).json({ error: "Session id must be a UUID" });
 
   try {
-    const result = await deleteSession(request.params.id);
+    const result = await deleteSession(request.params.id, request.user.id);
     if (result.kind === "not_found") return response.status(404).json({ error: "Session not found" });
     closeSessionAudioStreams(request.params.id);
     return response.json({ deleted: true, id: request.params.id });
@@ -200,7 +204,7 @@ router.post("/:id/process", async (request, response, next) => {
   if (!parsedId.success) return response.status(400).json({ error: "Session id must be a UUID" });
 
   try {
-    const result = await processCompletedSession(request.params.id);
+    const result = await processCompletedSession(request.params.id, undefined, request.user.id);
     if (result.kind === "not_found") return response.status(404).json({ error: "Session not found" });
     if (result.kind === "incomplete") return response.status(409).json({ error: `Only completed sessions can be processed; current status is ${result.status}` });
     if (result.kind === "no_transcript") return response.status(409).json({ error: "A finalized transcript is required before processing" });
@@ -217,7 +221,7 @@ router.post("/:id/regenerate-summary", async (request, response, next) => {
   if (!parsedId.success) return response.status(400).json({ error: "Session id must be a UUID" });
 
   try {
-    const result = await regenerateCompletedSession(request.params.id);
+    const result = await regenerateCompletedSession(request.params.id, undefined, request.user.id);
     if (result.kind === "not_found") return response.status(404).json({ error: "Session not found" });
     if (result.kind === "incomplete") return response.status(409).json({ error: `Only completed sessions can regenerate summaries; current status is ${result.status}` });
     if (result.kind === "no_transcript") return response.status(409).json({ error: "A finalized transcript is required before regenerating a summary" });
@@ -235,11 +239,11 @@ router.get("/:id/verification", async (request, response, next) => {
   if (!parsedId.success) return response.status(400).json({ error: "Session id must be a UUID" });
 
   try {
-    const session = await pool.query("SELECT id FROM sessions WHERE id = $1", [request.params.id]);
+    const session = await pool.query("SELECT id FROM sessions WHERE id = $1 AND user_id = $2", [request.params.id, request.user.id]);
     if (session.rowCount === 0) return response.status(404).json({ error: "Session not found" });
     return response.json({
-      verification: await refreshSessionVerification(request.params.id),
-      verificationHistory: await getSessionVerificationHistory(request.params.id),
+      verification: await refreshSessionVerification(request.params.id, {}, request.user.id),
+      verificationHistory: await getSessionVerificationHistory(request.params.id, request.user.id),
     });
   } catch (error) {
     return next(error);
@@ -251,19 +255,19 @@ router.post("/:id/verify", async (request, response, next) => {
   if (!parsedId.success) return response.status(400).json({ error: "Session id must be a UUID" });
 
   try {
-    const result = await submitSessionVerification(request.params.id);
+    const result = await submitSessionVerification(request.params.id, {}, request.user.id);
     if (result.kind === "not_found") return response.status(404).json({ error: "Session not found" });
     if (result.kind === "duplicate") {
       return response.status(409).json({ error: "A verification already exists for this transcript hash.", verification: result.verification });
     }
     if (result.kind === "failed") {
       const status = result.verification?.retryable ? 502 : 409;
-      return response.status(status).json({ error: result.verification?.error ?? "GenLayer verification failed.", verification: result.verification, verificationHistory: await getSessionVerificationHistory(request.params.id) });
+      return response.status(status).json({ error: result.verification?.error ?? "GenLayer verification failed.", verification: result.verification, verificationHistory: await getSessionVerificationHistory(request.params.id, request.user.id) });
     }
     if (result.verification?.verificationStatus === "accepted" || result.verification?.verificationStatus === "rejected") {
-      return response.json({ verification: result.verification, verificationHistory: await getSessionVerificationHistory(request.params.id) });
+      return response.json({ verification: result.verification, verificationHistory: await getSessionVerificationHistory(request.params.id, request.user.id) });
     }
-    return response.status(202).json({ verification: result.verification, verificationHistory: await getSessionVerificationHistory(request.params.id) });
+    return response.status(202).json({ verification: result.verification, verificationHistory: await getSessionVerificationHistory(request.params.id, request.user.id) });
   } catch (error) {
     if (error instanceof VerificationError) {
       return response.status(error.code === "genlayer_private_key_missing" || error.code === "genlayer_private_key_invalid" ? 503 : 409).json({

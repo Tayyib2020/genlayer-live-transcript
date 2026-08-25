@@ -1,10 +1,15 @@
 import { pool } from "./pool.js";
 
-export async function completeSession(sessionId) {
+export async function completeSession(sessionId, userId = null) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const sessionResult = await client.query("SELECT * FROM sessions WHERE id = $1 FOR UPDATE", [sessionId]);
+    const sessionResult = await client.query(
+      userId
+        ? "SELECT * FROM sessions WHERE id = $1 AND user_id = $2 FOR UPDATE"
+        : "SELECT * FROM sessions WHERE id = $1 FOR UPDATE",
+      userId ? [sessionId, userId] : [sessionId],
+    );
     if (sessionResult.rowCount === 0) {
       await client.query("ROLLBACK");
       return { kind: "not_found" };
@@ -32,8 +37,9 @@ export async function completeSession(sessionId) {
       `UPDATE sessions
           SET status = 'completed', ended_at = NOW()
         WHERE id = $1 AND status = 'created'
+          AND ($2::text IS NULL OR user_id = $2)
         RETURNING *`,
-      [sessionId],
+      [sessionId, userId],
     );
     await client.query("COMMIT");
     return { kind: "completed", session: completed.rows[0], transcriptCount };
@@ -45,17 +51,25 @@ export async function completeSession(sessionId) {
   }
 }
 
-export async function deleteSession(sessionId) {
+export async function deleteSession(sessionId, userId = null) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const existing = await client.query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE", [sessionId]);
+    const existing = await client.query(
+      userId
+        ? "SELECT id FROM sessions WHERE id = $1 AND user_id = $2 FOR UPDATE"
+        : "SELECT id FROM sessions WHERE id = $1 FOR UPDATE",
+      userId ? [sessionId, userId] : [sessionId],
+    );
     if (existing.rowCount === 0) {
       await client.query("ROLLBACK");
       return { kind: "not_found" };
     }
 
-    await client.query("DELETE FROM sessions WHERE id = $1", [sessionId]);
+    await client.query(
+      userId ? "DELETE FROM sessions WHERE id = $1 AND user_id = $2" : "DELETE FROM sessions WHERE id = $1",
+      userId ? [sessionId, userId] : [sessionId],
+    );
     await client.query("COMMIT");
     return { kind: "deleted" };
   } catch (error) {

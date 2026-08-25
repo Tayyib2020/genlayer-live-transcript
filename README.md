@@ -23,6 +23,7 @@ The application does not claim that the transcript is factually true. Transcript
 | Summary retry/status persistence | Implemented | `server/src/db/sessionProcessing.js` |
 | Completed-session integrity and summary UI | Implemented | `client/src/pages/SessionPage.jsx` |
 | GenLayer verification | Implemented when configured | `server/src/genlayer/transcriptVerifier.js`, `server/src/genlayer/verificationLifecycle.js`, `client/src/pages/SessionPage.jsx` |
+| Private accounts and user-owned archives | Implemented | `server/src/auth/auth.js`, `server/src/routes/auth.js`, `server/src/routes/sessions.js`, `client/src/auth.jsx` |
 
 The application never fabricates transcript or summary content. Missing provider configuration creates an explicit failure state.
 
@@ -172,9 +173,22 @@ GENLAYER_PRIVATE_KEY=
 GENLAYER_TRANSCRIPT_VERIFIER_ADDRESS=0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B
 GENLAYER_NETWORK=testnet-bradbury
 GENLAYER_TRANSCRIPT_VERIFIER_SUPPORTS_ATTEMPTS=1
+
+# Account sessions. The server stores only a digest of each random cookie token.
+AUTH_SESSION_TTL_DAYS=7
 ```
 
 If summary configuration is missing, processing still persists the canonical transcript and hash, then records `summary_generation_status = failed` with a safe configuration message. No summary placeholder is shown.
+
+## Accounts and private archives
+
+Signal Ledger uses username/password accounts for application privacy; users do not connect a blockchain wallet. Usernames are normalized to lowercase, must be 3–30 characters, and may contain letters, numbers, underscores, or hyphens. Passwords must be 8–128 characters and are stored only as bcrypt hashes.
+
+Authentication uses a database-backed, cryptographically random seven-day session token. The raw token is sent only in an HTTP-only cookie; PostgreSQL stores its SHA-256 digest. Production cookies use `Secure; SameSite=None` for the Netlify frontend and Render backend, while localhost uses a non-secure `SameSite=Lax` cookie. The frontend sends authenticated API requests with `credentials: include`.
+
+The backend scopes every session query and mutation to the authenticated user's `sessions.user_id`. Archive, transcript, summary, deletion, and GenLayer verification evidence are private. Legacy sessions created before this migration remain intact with `user_id = NULL` and are excluded from authenticated archives and direct session APIs; they are not automatically assigned to an account.
+
+The browser audio WebSocket authenticates the same cookie before accepting a connection and checks that the authenticated user owns the requested live session. The server-side GenLayer wallet remains the single transaction signer; account ownership does not add wallet authentication.
 
 ## Summary states
 
@@ -211,6 +225,10 @@ Phase 7 adds `session_verifications`, one local evidence row per session/transcr
 ## API
 
 ```text
+POST   /api/auth/register
+POST   /api/auth/login
+POST   /api/auth/logout
+GET    /api/auth/me
 POST   /api/sessions
 GET    /api/sessions
 GET    /api/sessions/:id        → { session, transcript, derivative, verification, verificationHistory, processing }
@@ -224,6 +242,8 @@ GET    /api/sessions/:id/verification
 DELETE /api/sessions/:id
 WS     /ws/audio?sessionId=...
 ```
+
+`/api/auth/register` and `/api/auth/login` return only `{ user: { id, username, createdAt } }` and establish the HTTP-only session cookie. Invalid login attempts use the same generic message whether the username exists or not. State-changing requests must come from the configured `CLIENT_ORIGIN`.
 
 `POST /api/sessions/:id/process` accepts no transcript or hash from the client. It validates that the session is completed, loads persisted final segments, derives the canonical transcript and hash, and invokes the configured summary service.
 
@@ -245,26 +265,38 @@ npm run dev
 
 The client runs at `http://localhost:5173`; the API runs at `http://localhost:3001`.
 
+Open `http://localhost:5173`, create an account at **Create an account**, and sign in. Set `CLIENT_ORIGIN` to the exact frontend origin. For production, keep `CLIENT_ORIGIN=https://signalledgertranscript.netlify.app`, set `NODE_ENV=production`, and provide the same root `.env` variables on Render. Do not place server credentials or `AUTH_SESSION_TTL_DAYS` secrets on Netlify; Netlify only needs its existing API/WS frontend environment variables.
+
+### Production deployment settings
+
+On Render, configure the server environment with `NODE_ENV=production`, `CLIENT_ORIGIN=https://signalledgertranscript.netlify.app`, `AUTH_SESSION_TTL_DAYS=7`, the hosted Neon `DATABASE_URL`, provider credentials, and the existing server-side GenLayer variables. Run `npm run migrate` once against Neon before starting the service.
+
+On Netlify, keep the existing SPA build and set only the frontend connection variables:
+
+```text
+VITE_API_BASE_URL=https://genlayer-live-transcript.onrender.com
+VITE_WS_BASE_URL=wss://genlayer-live-transcript.onrender.com
+```
+
+The Netlify site must not receive `DATABASE_URL`, provider API keys, `GENLAYER_PRIVATE_KEY`, or authentication implementation secrets. The existing `client/public/_redirects` file remains required so direct React Router URLs serve the SPA entry point.
+
 ## How to Verify This Project
 
-1. Configure the root `.env` with Neon, Deepgram, and exactly one summary-provider credential.
+1. Configure the root `.env` with Neon, Deepgram, exactly one summary-provider credential, and the Bradbury V2 variables.
 2. Run `npm run migrate` and `npm run dev`.
-3. Create a session.
-4. Share a browser tab containing real speech.
-5. Confirm real Deepgram transcript segments appear.
-6. Stop sharing.
-7. Click **Complete Session**.
-8. Click **Generate Summary** on the completed record.
-9. Inspect the canonical transcript, SHA-256 hash, summary status, summary, topics, announcements, and supported Q&A.
-10. Refresh and confirm the canonical transcript, hash, and generated summary persist unchanged.
-11. Click **Verify with GenLayer**.
-12. Observe **Submitting to GenLayer...**, then **Waiting for validator consensus...**.
-13. Inspect the real Bradbury contract address, transaction hash, canonical hash, and validator reason.
-14. Observe `ACCEPTED` or `REJECTED` only after the backend reads `get_verification` for the exact verification identity.
-15. Open the contract evidence at [TranscriptVerifier V2 on Bradbury](https://explorer-bradbury.genlayer.com/address/0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B). The transaction hash is shown without a link unless its route is confirmed.
-16. If the result is `REJECTED`, inspect the validator reason, click **Regenerate Summary**, and confirm the new summary uses the same canonical transcript and transcript hash.
-17. Click **Verify New Summary with GenLayer** only when explicitly ready. Confirm the prior rejected attempt remains visible in verification history.
-18. Delete the session and confirm local verification, summary-attempt, derivative, and transcript rows disappear while the on-chain transaction remains immutable.
+3. Register User A, sign in, and confirm the username appears in the header.
+4. Create a session and share a browser tab containing real speech.
+5. Confirm real Deepgram transcript segments appear, then stop sharing.
+6. Click **Complete Session**, then **Generate Summary**.
+7. Inspect the canonical transcript, SHA-256 hash, summary status, summary, topics, announcements, and supported Q&A.
+8. Refresh and confirm the canonical transcript, hash, and generated summary persist unchanged.
+9. Click **Verify with GenLayer** and inspect the Bradbury contract, transaction hash, canonical hash, and validator reason.
+10. Observe `ACCEPTED` or `REJECTED` only after the backend reads `get_verification` for the exact verification identity.
+11. If the result is `REJECTED`, inspect the validator reason, click **Regenerate Summary**, and confirm the new summary uses the same canonical transcript and transcript hash.
+12. Click **Verify New Summary with GenLayer** only when explicitly ready. Confirm the prior rejected attempt remains visible.
+13. Log out, register User B, and confirm User B's archive does not contain User A's session.
+14. Open User A's session URL while signed in as User B and confirm it shows **Record unavailable** without revealing session data.
+15. Delete the session as User A and confirm local evidence is removed while the on-chain transaction remains immutable.
 
 Older archived completed sessions can follow the same process when they contain finalized transcript segments. If no derivative exists, processing creates the canonical transcript and hash on demand; a ready summary is never regenerated automatically. They do not need to have been created after Phase 7.
 
@@ -306,7 +338,7 @@ $env:RUN_DB_TESTS="1"
 npm test
 ```
 
-Tests cover deterministic canonicalization, finalized-only inclusion, ordering, hash format, known hash compatibility, one-character hash changes, OpenAI compatibility and diagnostics, Gemini routing/request shape/output validation/error sanitization, unsupported-provider handling, missing configuration, legacy completed-session processing, no-transcript rejection, ready-derivative idempotency, explicit failed-summary retry, completion/deletion lifecycle, exact GenLayer argument construction, transcript/hash integrity checks, duplicate-safe state handling, transaction-versus-contract-result mapping, malformed contract responses, missing private-key configuration, and Phase 1–6 behavior.
+Tests cover account registration/login/logout/session expiry, password hashing and generic auth failures, username normalization and uniqueness, private archives, cross-user direct URL and mutation rejection, server-side ownership assignment, legacy NULL-owner isolation, authenticated owner/non-owner audio WebSockets, deterministic canonicalization, finalized-only inclusion, ordering, hash format, summary-provider diagnostics, legacy completed-session processing, summary retry and attempt history, completion/deletion lifecycle, exact GenLayer argument construction, transcript/hash integrity checks, duplicate-safe state handling, transaction-versus-contract-result mapping, malformed contract responses, and existing Phase 1–7 behavior.
 
 Do not claim a live summary-provider request passed unless `SUMMARY_PROVIDER` and `SUMMARY_API_KEY` were actually configured and contacted.
 
@@ -318,6 +350,8 @@ Do not claim a live summary-provider request passed unless `SUMMARY_PROVIDER` an
 - Completed transcript data is immutable. Editing is not supported in this phase.
 - No raw audio is stored.
 - A real Bradbury verification requires a funded server-side account and may take time for validator consensus. Transaction and validator evidence are available only after a live submission completes.
+- Authentication rate limiting is process-local; a multi-instance deployment should put login/register rate limiting at the edge or use a shared limiter.
+- Cookies require the exact configured `CLIENT_ORIGIN`; changing the Netlify hostname without updating Render CORS/cookie configuration will make authenticated requests fail.
 
 ## Project structure
 
@@ -338,6 +372,8 @@ genlayer-live-transcript/
 │   ├── genlayer/verificationLifecycle.js
 │   ├── genlayer/verificationLogic.js
 │   ├── integrity/transcriptIntegrity.js
+│   ├── auth/auth.js
+│   ├── routes/auth.js
 │   ├── routes/sessions.js
 │   ├── summary/summaryCommon.js
 │   ├── summary/summaryProvider.js
@@ -347,6 +383,7 @@ genlayer-live-transcript/
 │   └── websocket/audioServer.js
 ├── server/test/
 │   ├── deepgram.test.js
+│   ├── authOwnership.integration.test.js
 │   ├── geminiSummary.test.js
 │   ├── sessionLifecycle.integration.test.js
 │   ├── summaryProvider.test.js
@@ -356,4 +393,4 @@ genlayer-live-transcript/
 └── README.md
 ```
 
-Phase 7 is the final core integration phase. Future work may include summary revision/re-verification, richer transaction explorer links after the route is confirmed, and additional reviewer tooling; none of those are presented as implemented here.
+Authentication is an application privacy layer and remains separate from the server-side GenLayer wallet. Users own private Signal Ledger data; the configured server account continues to pay for TranscriptVerifier transactions.

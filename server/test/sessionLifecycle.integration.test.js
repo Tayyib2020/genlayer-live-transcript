@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import express from "express";
 import http from "node:http";
+import authRouter from "../src/routes/auth.js";
 import sessionsRouter from "../src/routes/sessions.js";
 import { pool } from "../src/db/pool.js";
 import { persistFinalTranscriptSegment } from "../src/db/transcriptStore.js";
@@ -13,12 +14,15 @@ const runDatabaseTests = process.env.RUN_DB_TESTS === "1";
 test("Phase 5 session completion and deletion lifecycle", { skip: !runDatabaseTests }, async () => {
   const app = express();
   app.use(express.json());
+  app.use("/api/auth", authRouter);
   app.use("/api/sessions", sessionsRouter);
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
   let sessionId;
+  let ownerId;
+  let authCookie;
   const createdSessionIds = [];
 
   async function createCompletedSession(title, transcriptText = []) {
@@ -26,9 +30,9 @@ test("Phase 5 session completion and deletion lifecycle", { skip: !runDatabaseTe
     createdSessionIds.push(id);
     const completedAt = new Date();
     await pool.query(
-      `INSERT INTO sessions (id, title, status, started_at, ended_at)
-       VALUES ($1, $2, 'completed', $3, $3)`,
-      [id, title, completedAt],
+      `INSERT INTO sessions (id, user_id, title, status, started_at, ended_at)
+       VALUES ($1, $2, $3, 'completed', $4, $4)`,
+      [id, ownerId, title, completedAt],
     );
     for (const [index, text] of transcriptText.entries()) {
       await pool.query(
@@ -44,13 +48,21 @@ test("Phase 5 session completion and deletion lifecycle", { skip: !runDatabaseTe
 
   async function request(path, options) {
     const response = await fetch(`${baseUrl}${path}`, {
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(authCookie ? { Cookie: authCookie } : {}) },
       ...options,
     });
+    const setCookie = response.headers.get("set-cookie");
+    if (setCookie) authCookie = setCookie.split(";", 1)[0];
     return { status: response.status, body: await response.json() };
   }
 
   try {
+    const registered = await request("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username: `lifecycle-${crypto.randomUUID().slice(0, 8)}`, password: "correct horse battery staple" }),
+    });
+    assert.equal(registered.status, 201);
+    ownerId = registered.body.user.id;
     const created = await request("/api/sessions", {
       method: "POST",
       body: JSON.stringify({ title: `Phase 5 lifecycle test ${crypto.randomUUID()}` }),

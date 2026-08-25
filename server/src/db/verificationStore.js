@@ -45,11 +45,13 @@ function mapVerification(row) {
 const HISTORY_QUERY = `SELECT ${VERIFICATION_HISTORY_COLUMNS}, attempts.attempt_number
   FROM verification_attempts AS verifications
   JOIN summary_attempts AS attempts ON attempts.id = verifications.summary_attempt_id
+  JOIN sessions AS session_owner ON session_owner.id = verifications.session_id
  WHERE verifications.session_id = $1
+   AND ($2::text IS NULL OR session_owner.user_id = $2)
  ORDER BY attempts.attempt_number ASC`;
 
-export async function getSessionVerificationHistory(sessionId) {
-  const result = await pool.query(HISTORY_QUERY, [sessionId]);
+export async function getSessionVerificationHistory(sessionId, userId = null) {
+  const result = await pool.query(HISTORY_QUERY, [sessionId, userId]);
   if (result.rowCount > 0) return result.rows.map(mapVerification);
 
   // A migration may not have copied a malformed legacy row that has no ready
@@ -59,14 +61,15 @@ export async function getSessionVerificationHistory(sessionId) {
             transaction_hash, transaction_status, verification_status, contract_status,
             reason, submitted_at, completed_at, error, created_at, updated_at
        FROM session_verifications
-      WHERE session_id = $1`,
-    [sessionId],
+      WHERE session_id = $1
+        AND ($2::text IS NULL OR session_id IN (SELECT id FROM sessions WHERE user_id = $2))`,
+    [sessionId, userId],
   );
   return legacy.rows.map((row) => mapVerification({ ...row, verification_id: row.transcript_hash, attempt_number: 1 }));
 }
 
-export async function getSessionVerification(sessionId) {
-  const history = await getSessionVerificationHistory(sessionId);
+export async function getSessionVerification(sessionId, userId = null) {
+  const history = await getSessionVerificationHistory(sessionId, userId);
   return history.at(-1) ?? null;
 }
 
@@ -114,11 +117,16 @@ async function buildComputedIntegrity(client, sessionId) {
   return { count: mapped.length, integrity: buildTranscriptIntegrity(mapped) };
 }
 
-export async function prepareSessionVerification({ sessionId, contractAddress, network }) {
+export async function prepareSessionVerification({ sessionId, contractAddress, network, userId = null }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const sessionResult = await client.query("SELECT status FROM sessions WHERE id = $1 FOR UPDATE", [sessionId]);
+    const sessionResult = await client.query(
+      `SELECT status FROM sessions
+        WHERE id = $1 AND ($2::text IS NULL OR user_id = $2)
+        FOR UPDATE`,
+      [sessionId, userId],
+    );
     if (sessionResult.rowCount === 0) {
       await client.query("ROLLBACK");
       return { kind: "not_found" };

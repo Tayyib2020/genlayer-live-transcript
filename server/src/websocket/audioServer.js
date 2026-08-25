@@ -3,6 +3,7 @@ import { pool } from "../db/pool.js";
 import { persistFinalTranscriptSegment } from "../db/transcriptStore.js";
 import { createDeepgramTranscriber } from "../transcription/deepgram.js";
 import { parseSessionId } from "../utils/validation.js";
+import { authenticateRequest } from "../auth/auth.js";
 
 export const AUDIO_CHUNK_INTERVAL_MS = 1_000;
 export const MAX_AUDIO_CHUNK_BYTES = 200 * 1_024;
@@ -70,8 +71,8 @@ function validAudioStartMessage(message) {
     && message.chunkIntervalMs <= MAX_DECLARED_CHUNK_INTERVAL_MS;
 }
 
-async function validateSession(sessionId) {
-  const result = await pool.query("SELECT id, status FROM sessions WHERE id = $1", [sessionId]);
+async function validateSession(sessionId, userId) {
+  const result = await pool.query("SELECT id, status FROM sessions WHERE id = $1 AND user_id = $2", [sessionId, userId]);
   if (result.rowCount === 0) return { valid: false, statusCode: 404, message: "Session not found" };
   if (result.rows[0].status !== "live") return { valid: false, statusCode: 409, message: "Session is not active" };
   return { valid: true };
@@ -104,7 +105,12 @@ export function attachAudioWebSocketServer(httpServer) {
     }
 
     try {
-      const validation = await validateSession(sessionId);
+      const user = await authenticateRequest(request);
+      if (!user) {
+        upgradeError(socket, 401, "Authentication required");
+        return;
+      }
+      const validation = await validateSession(sessionId, user.id);
       if (!validation.valid) {
         upgradeError(socket, validation.statusCode, validation.message);
         return;
@@ -116,6 +122,7 @@ export function attachAudioWebSocketServer(httpServer) {
     }
 
     request.audioSessionId = sessionId;
+    request.audioUserId = request.user.id;
     webSocketServer.handleUpgrade(request, socket, head, (client) => {
       webSocketServer.emit("connection", client, request);
     });

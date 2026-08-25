@@ -242,11 +242,16 @@ async function runSummaryGeneration(sessionId, claim, summaryGenerator) {
   return { kind: "ready", derivative: await loadMappedDerivative(sessionId) };
 }
 
-async function beginSummaryAttempt(sessionId, { regeneration = false } = {}) {
+async function beginSummaryAttempt(sessionId, { regeneration = false, userId = null } = {}) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const session = await client.query("SELECT status FROM sessions WHERE id = $1 FOR UPDATE", [sessionId]);
+    const session = await client.query(
+      `SELECT status FROM sessions
+        WHERE id = $1 AND ($2::text IS NULL OR user_id = $2)
+        FOR UPDATE`,
+      [sessionId, userId],
+    );
     if (session.rowCount === 0) {
       await client.query("ROLLBACK");
       return { kind: "not_found" };
@@ -318,14 +323,14 @@ async function beginSummaryAttempt(sessionId, { regeneration = false } = {}) {
   }
 }
 
-export async function processCompletedSession(sessionId, summaryGenerator = generateSummary) {
-  const begin = await beginSummaryAttempt(sessionId);
+export async function processCompletedSession(sessionId, summaryGenerator = generateSummary, userId = null) {
+  const begin = await beginSummaryAttempt(sessionId, { userId });
   if (begin.kind !== "claimed") return { kind: begin.kind, derivative: begin.derivative, status: begin.status };
   return runSummaryGeneration(sessionId, begin, summaryGenerator);
 }
 
-export async function regenerateCompletedSession(sessionId, summaryGenerator = generateSummary) {
-  const begin = await beginSummaryAttempt(sessionId, { regeneration: true });
+export async function regenerateCompletedSession(sessionId, summaryGenerator = generateSummary, userId = null) {
+  const begin = await beginSummaryAttempt(sessionId, { regeneration: true, userId });
   if (begin.kind !== "claimed") return { kind: begin.kind, derivative: begin.derivative, status: begin.status };
   return runSummaryGeneration(sessionId, begin, summaryGenerator);
 }
