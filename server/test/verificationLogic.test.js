@@ -105,6 +105,8 @@ test("Bradbury decision output is parsed deterministically", () => {
 
 test("pending and failed transaction states remain distinct from semantic verdicts", () => {
   assert.equal(mapTransactionState({ statusName: "PROPOSING" }).kind, "pending");
+  assert.equal(mapTransactionState(fixtures.appealRecoveryProduction.intermediateTransaction).kind, "pending");
+  assert.equal(mapTransactionState(fixtures.appealRecoveryProduction.intermediateTransaction).recoverable, true);
   assert.equal(mapTransactionState({ statusName: "CANCELED" }).kind, "failed");
   assert.equal(mapTransactionState({ statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR" }).kind, "failed");
   assert.equal(
@@ -113,6 +115,10 @@ test("pending and failed transaction states remain distinct from semantic verdic
   );
   assert.equal(mapTransactionState(fixtures.executionFailure).kind, "failed");
   assert.throws(() => normalizeContractVerification("contract execution failed", transcriptHash), /invalid verification status/);
+  assert.equal(
+    normalizeContractVerification(fixtures.appealRecoveryProduction.finalizedTransaction, transcriptHash).contractStatus,
+    "REJECTED",
+  );
 });
 
 test("malformed contract records are rejected safely", () => {

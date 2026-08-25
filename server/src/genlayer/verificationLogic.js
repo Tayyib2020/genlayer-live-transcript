@@ -32,6 +32,9 @@ const TERMINAL_FAILURE_STATES = new Set([
   "UNDETERMINED",
   "CANCELED",
   "VALIDATORS_TIMEOUT",
+]);
+
+const RECOVERABLE_TRANSACTION_STATES = new Set([
   "LEADER_TIMEOUT",
 ]);
 
@@ -51,6 +54,17 @@ const CONTRACT_OUTPUT_FIELDS = [
   "contract_output",
   "executionError",
   "execution_error",
+  "outputData",
+  "output_data",
+  "executionOutput",
+  "execution_output",
+  "returnData",
+  "return_data",
+  "consensus_data",
+  "consensusData",
+  "leader_receipt",
+  "leaderReceipt",
+  "readable",
   "result",
   "value",
 ];
@@ -158,6 +172,9 @@ export function mapTransactionState(transaction) {
   if (finalizationPending || PENDING_TRANSACTION_STATES.has(status)) {
     return { kind: "pending", status, execution, finalizationPending };
   }
+  if (RECOVERABLE_TRANSACTION_STATES.has(status)) {
+    return { kind: "pending", status, execution, finalizationPending, recoverable: true };
+  }
   if (execution === "FINISHED_WITH_ERROR" && status !== "ACCEPTED") {
     return {
       kind: "failed",
@@ -201,7 +218,14 @@ function parseDecisionOutput(value) {
 function findDecisionOutput(value, depth = 0) {
   const direct = parseDecisionOutput(value);
   if (direct) return direct;
-  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 2) return null;
+  if (!value || typeof value !== "object" || depth > 4) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const parsed = findDecisionOutput(item, depth + 1);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
   for (const field of CONTRACT_OUTPUT_FIELDS) {
     if (!(field in value)) continue;
     const parsed = findDecisionOutput(value[field], depth + 1);

@@ -30,11 +30,13 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     },
     getTranscriptTransaction: async () => {
       if (transactionMode === "pending") return { statusName: "PROPOSING" };
+      if (transactionMode === "leader_timeout") return { statusName: "LEADER_TIMEOUT" };
       if (transactionMode === "failed") return { statusName: "CANCELED" };
       if (transactionMode === "accepted_consensus") return { statusName: "ACCEPTED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionACCEPTED\nFaithful summary.", finalizationStatus: "WAITING" };
       if (transactionMode === "rejected_consensus") return { statusName: "ACCEPTED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionREJECTED\nThe summary changes an uncertain statement.", finalizationStatus: "WAITING" };
       if (transactionMode === "finalized_semantic_accepted") return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionACCEPTED\nFaithful summary." };
       if (transactionMode === "finalized_semantic_rejected") return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionREJECTED\nThe summary changes an uncertain statement." };
+      if (transactionMode === "appeal_recovered") return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR", consensus_data: { leader_receipt: [{ result: "decisionREJECTED\nThe appeal overturned the earlier timeout; the summary changes an uncertain statement." }] } };
       return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_RETURN" };
     },
     getTranscriptVerification: async (transcriptHash) => {
@@ -140,6 +142,29 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     assert.equal(rejectedConsensusFinalized.verification.verificationStatus, "rejected");
     assert.equal(rejectedConsensusFinalized.verification.contractStatus, "REJECTED");
 
+    const appealRecoveryReady = await makeReadySession(`Phase 7 appeal recovery ${crypto.randomUUID()}`, "The statement remains uncertain.");
+    transactionMode = "leader_timeout";
+    contractMode = "read_empty";
+    const initialTimeout = await submitSessionVerification(appealRecoveryReady.id, services);
+    assert.equal(initialTimeout.verification.verificationStatus, "pending");
+    const recoveryTransactionHash = initialTimeout.verification.transactionHash;
+    await pool.query(
+      `UPDATE verification_attempts
+          SET verification_status = 'failed', transaction_status = 'LEADER_TIMEOUT', error = 'The GenLayer transaction ended in LEADER_TIMEOUT.'
+        WHERE session_id = $1`,
+      [appealRecoveryReady.id],
+    );
+    transactionMode = "appeal_recovered";
+    const recoveredAppeal = await submitSessionVerification(appealRecoveryReady.id, services);
+    assert.equal(recoveredAppeal.verification.verificationStatus, "rejected");
+    assert.equal(recoveredAppeal.verification.contractStatus, "REJECTED");
+    assert.match(recoveredAppeal.verification.reason, /appeal overturned/i);
+    assert.equal(recoveredAppeal.verification.transactionHash, recoveryTransactionHash);
+    assert.equal(submissionCount, 4);
+    const recoveryHistory = await getSessionVerificationHistory(appealRecoveryReady.id);
+    assert.equal(recoveryHistory.length, 1);
+    assert.equal(recoveryHistory[0].transactionHash, recoveryTransactionHash);
+
     const rejectedReady = await makeReadySession(`Phase 7 rejected ${crypto.randomUUID()}`, "The launch date is unconfirmed.");
     contractMode = "REJECTED";
     transactionMode = "accepted";
@@ -165,7 +190,7 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     );
     const readFailureRetry = await submitSessionVerification(readFailureReady.id, { ...services, getTranscriptVerification: async (hash) => ({ transcript_hash: hash, status: "ACCEPTED", reason: "Recovered read." }) });
     assert.equal(readFailureRetry.verification.verificationStatus, "accepted");
-    assert.equal(submissionCount, 4);
+    assert.equal(submissionCount, 7);
 
     const legacy = await makeReadySession(`Phase 7 archived legacy ${crypto.randomUUID()}`, "An archived session remains verifiable.");
     transactionMode = "pending";

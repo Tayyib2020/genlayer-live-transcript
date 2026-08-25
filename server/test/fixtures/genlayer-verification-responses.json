@@ -20,6 +20,23 @@
     },
     "contractResult": {}
   },
+  "appealRecoveryProduction": {
+    "transactionHash": "0xf65f8181a9bd287a59298c46ab2cfac5e7993b6210318b88179b5489b18c8dde",
+    "contractAddress": "0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B",
+    "intermediateTransaction": {
+      "statusName": "LEADER_TIMEOUT"
+    },
+    "finalizedTransaction": {
+      "statusName": "FINALIZED",
+      "txExecutionResultName": "FINISHED_WITH_ERROR",
+      "consensus_data": {
+        "leader_receipt": [
+          { "result": "decisionREJECTED\nThe summary changes an uncertain statement." }
+        ]
+      }
+    },
+    "contractResult": {}
+  },
   "decisionRejected": "decisionREJECTED\nThe summary changes an uncertain statement into a confirmation.",
   "finalizationPending": {
     "statusName": "ACCEPTED",
