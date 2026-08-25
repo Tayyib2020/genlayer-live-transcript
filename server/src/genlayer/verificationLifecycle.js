@@ -10,6 +10,7 @@ import {
   recordContractVerification,
   recordSubmittedTransaction,
   recordTransactionStatus,
+  recordVerificationPending,
   recordVerificationFailure,
 } from "../db/verificationStore.js";
 import {
@@ -30,6 +31,26 @@ function logLifecycleError(error, sessionId, verification) {
   });
 }
 
+const DETERMINISTIC_RESULT_ERRORS = new Set([
+  "contract_record_missing",
+  "contract_record_malformed",
+  "contract_hash_mismatch",
+  "contract_reason_missing",
+]);
+
+function isTransientReadError(error) {
+  return !DETERMINISTIC_RESULT_ERRORS.has(error?.code);
+}
+
+function executionFailureMessage(transactionState, error) {
+  if (transactionState?.execution === "FINISHED_WITH_ERROR") {
+    return "The GenLayer transaction finalized with a contract execution error.";
+  }
+  return transactionState?.kind === "failed"
+    ? transactionState.message
+    : safeVerificationError(error);
+}
+
 export async function refreshSessionVerification(sessionId, services = {}, userId = null) {
   const transactionReader = services.getTranscriptTransaction ?? getTranscriptTransaction;
   const contractReader = services.getTranscriptVerification ?? getTranscriptVerification;
@@ -42,27 +63,41 @@ export async function refreshSessionVerification(sessionId, services = {}, userI
     transaction = await transactionReader(current.transactionHash);
   } catch (error) {
     logLifecycleError(error, sessionId, current);
-    await recordVerificationFailure(current.id, safeVerificationError(error));
+    // A status/RPC read failure is not evidence of a semantic rejection or a
+    // failed transaction. Keep the existing transaction and make Refresh
+    // retryable; this also recovers records incorrectly marked failed earlier.
+    await recordVerificationPending(current.id, { transactionStatus: current.transactionStatus ?? "PENDING" });
     return getSessionVerification(sessionId, userId);
   }
 
   const transactionState = mapTransactionState(transaction);
   await recordTransactionStatus(current.id, { transactionStatus: transactionState.status });
-  if (transactionState.kind === "pending") return getSessionVerification(sessionId, userId);
-  if (transactionState.kind === "failed") {
-    await recordVerificationFailure(current.id, transactionState.message);
+  if (transactionState.kind === "pending") {
+    await recordVerificationPending(current.id, { transactionStatus: transactionState.status });
     return getSessionVerification(sessionId, userId);
   }
 
   try {
-    const record = normalizeContractVerification(
-      await contractReader(current.verificationId),
-      current.transcriptHash,
-    );
+    let record;
+    try {
+      // Some Bradbury responses expose the authoritative contract return in
+      // an execution-result field. Parse that exact result before falling
+      // back to the persisted contract view.
+      record = normalizeContractVerification(transaction, current.transcriptHash);
+    } catch {
+      record = normalizeContractVerification(
+        await contractReader(current.verificationId),
+        current.transcriptHash,
+      );
+    }
     await recordContractVerification(current.id, record);
   } catch (error) {
     logLifecycleError(error, sessionId, current);
-    await recordVerificationFailure(current.id, safeVerificationError(error));
+    if (transactionState.finalizationPending || isTransientReadError(error)) {
+      await recordVerificationPending(current.id, { transactionStatus: transactionState.status });
+    } else {
+      await recordVerificationFailure(current.id, executionFailureMessage(transactionState, error));
+    }
   }
   return getSessionVerification(sessionId, userId);
 }

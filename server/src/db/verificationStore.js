@@ -240,6 +240,22 @@ export async function recordTransactionStatus(targetId, { transactionStatus }) {
   return mapVerification(result.rows[0]);
 }
 
+export async function recordVerificationPending(targetId, { transactionStatus = "PENDING" } = {}) {
+  const target = targetWhere(targetId);
+  const result = await pool.query(
+    `UPDATE verification_attempts
+        SET verification_status = 'pending', transaction_status = $2,
+            contract_status = NULL, reason = NULL, completed_at = NULL,
+            error = NULL, updated_at = NOW()
+      WHERE ${target.sql}
+        AND transaction_hash IS NOT NULL
+        AND verification_status IN ('submitting', 'pending', 'failed')
+      RETURNING ${VERIFICATION_COLUMNS}`,
+    [target.values[0], transactionStatus],
+  );
+  return mapVerification(result.rows[0]);
+}
+
 export async function recordVerificationFailure(targetId, message) {
   const target = targetWhere(targetId);
   const result = await pool.query(

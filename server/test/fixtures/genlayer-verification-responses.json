@@ -1,0 +1,22 @@
+{
+  "observedProduction": {
+    "transactionHash": "0x80fb605b9b4e123c56cb0cbed62f5d10f573677d5d325916dc5f7266d43028d7",
+    "contractAddress": "0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B",
+    "transaction": {
+      "statusName": "ACCEPTED",
+      "txExecutionResultName": "FINISHED_WITH_ERROR",
+      "executionError": "decisionACCEPTED\nThe summary correctly captures the transcript without adding or contradicting facts."
+    },
+    "contractResult": "decisionACCEPTED\nThe summary correctly captures the transcript without adding or contradicting facts."
+  },
+  "decisionRejected": "decisionREJECTED\nThe summary changes an uncertain statement into a confirmation.",
+  "finalizationPending": {
+    "statusName": "ACCEPTED",
+    "txExecutionResultName": "FINISHED_WITH_ERROR",
+    "consensus_data": { "final": false }
+  },
+  "executionFailure": {
+    "statusName": "CANCELED",
+    "txExecutionResultName": "FINISHED_WITH_ERROR"
+  }
+}

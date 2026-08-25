@@ -35,6 +35,26 @@ const TERMINAL_FAILURE_STATES = new Set([
   "LEADER_TIMEOUT",
 ]);
 
+const PENDING_FINALIZATION_STATES = new Set([
+  "PENDING",
+  "WAITING",
+  "IN_PROGRESS",
+  "NOT_FINALIZED",
+  "FINALIZING",
+]);
+
+const CONTRACT_OUTPUT_FIELDS = [
+  "output",
+  "returnValue",
+  "return_value",
+  "contractOutput",
+  "contract_output",
+  "executionError",
+  "execution_error",
+  "result",
+  "value",
+];
+
 export class VerificationError extends Error {
   constructor(code, message, { retryable = false } = {}) {
     super(message);
@@ -105,45 +125,117 @@ export function normalizeTransactionStatus(transaction) {
   return "UNKNOWN";
 }
 
+function transactionExecutionResult(transaction) {
+  return transaction?.txExecutionResultName
+    ?? (transaction?.txExecutionResult === 1 ? "FINISHED_WITH_RETURN" : transaction?.txExecutionResult === 2 ? "FINISHED_WITH_ERROR" : undefined);
+}
+
+function transactionFinalizationPending(transaction) {
+  if (transaction?.finalized === false || transaction?.isFinalized === false || transaction?.consensus_data?.final === false) return true;
+  const finalizationStatus = transaction?.finalizationStatus
+    ?? transaction?.finalization_status
+    ?? transaction?.finalizationState;
+  return typeof finalizationStatus === "string"
+    && PENDING_FINALIZATION_STATES.has(finalizationStatus.trim().toUpperCase());
+}
+
 export function mapTransactionState(transaction) {
   const status = normalizeTransactionStatus(transaction);
-  const execution = transaction?.txExecutionResultName
-    ?? (transaction?.txExecutionResult === 1 ? "FINISHED_WITH_RETURN" : transaction?.txExecutionResult === 2 ? "FINISHED_WITH_ERROR" : undefined);
+  const execution = transactionExecutionResult(transaction);
+  const finalizationPending = transactionFinalizationPending(transaction);
 
-  if (execution === "FINISHED_WITH_ERROR") {
-    return { kind: "failed", status, code: "transaction_execution_failed", message: "The GenLayer transaction finalized with a contract execution error." };
+  // Bradbury can report a consensus decision separately from the execution
+  // field. In particular, a valid TranscriptVerifier result may be exposed
+  // alongside FINISHED_WITH_ERROR, so the semantic contract read must remain
+  // authoritative when consensus has accepted/finalized the transaction.
+  if (finalizationPending || PENDING_TRANSACTION_STATES.has(status)) {
+    return { kind: "pending", status, execution, finalizationPending };
   }
-  if (TERMINAL_FAILURE_STATES.has(status)) {
-    return { kind: "failed", status, code: "transaction_undetermined", message: `The GenLayer transaction ended in ${status}.` };
+  if (execution === "FINISHED_WITH_ERROR" && status !== "ACCEPTED") {
+    return {
+      kind: "failed",
+      status,
+      execution,
+      finalizationPending,
+      code: "transaction_execution_failed",
+      message: "The GenLayer transaction finalized with a contract execution error.",
+    };
   }
   if (status === "ACCEPTED" || status === "FINALIZED") {
-    return { kind: "ready_to_read", status };
+    return { kind: "ready_to_read", status, execution, finalizationPending };
   }
-  if (PENDING_TRANSACTION_STATES.has(status)) {
-    return { kind: "pending", status };
+  if (TERMINAL_FAILURE_STATES.has(status)) {
+    return {
+      kind: "failed",
+      status,
+      execution,
+      finalizationPending,
+      code: execution === "FINISHED_WITH_ERROR" ? "transaction_execution_failed" : "transaction_undetermined",
+      message: execution === "FINISHED_WITH_ERROR"
+        ? "The GenLayer transaction finalized with a contract execution error."
+        : `The GenLayer transaction ended in ${status}.`,
+    };
   }
-  return { kind: "pending", status };
+  return { kind: "pending", status, execution, finalizationPending };
+}
+
+function parseDecisionOutput(value) {
+  if (typeof value !== "string") return null;
+  const output = value.trim();
+  // The decision marker is the contract's authoritative encoding. It must be
+  // the first token, so explanation text cannot accidentally become a verdict.
+  const match = output.match(/^decision(ACCEPTED|REJECTED)(?:\r?\n|$)/);
+  if (!match) return null;
+  const reason = output.slice(match[0].length).trim();
+  if (!reason) return null;
+  return { status: match[1], reason };
+}
+
+function findDecisionOutput(value, depth = 0) {
+  const direct = parseDecisionOutput(value);
+  if (direct) return direct;
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 2) return null;
+  for (const field of CONTRACT_OUTPUT_FIELDS) {
+    if (!(field in value)) continue;
+    const parsed = findDecisionOutput(value[field], depth + 1);
+    if (parsed) return parsed;
+  }
+  return null;
 }
 
 export function normalizeContractVerification(record, expectedHash) {
-  if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).length === 0) {
+  if (record === null || record === undefined || (typeof record === "object" && !Array.isArray(record) && Object.keys(record).length === 0)) {
     throw new VerificationError("contract_record_missing", "The finalized transaction has no TranscriptVerifier record yet.", { retryable: false });
   }
-  const status = record.status;
+
+  const returnedHash = typeof record === "object" && !Array.isArray(record)
+    ? (record.transcript_hash ?? record.transcriptHash)
+    : undefined;
+  if (returnedHash !== undefined && (typeof returnedHash !== "string" || returnedHash.toLowerCase() !== expectedHash.toLowerCase())) {
+    throw new VerificationError("contract_hash_mismatch", "TranscriptVerifier returned a record for a different transcript hash.");
+  }
+
+  const structuredStatus = typeof record === "object" && !Array.isArray(record) ? record.status : undefined;
+  const structuredReason = typeof record === "object" && !Array.isArray(record) ? record.reason : undefined;
+  const parsedOutput = findDecisionOutput(record);
+  const status = structuredStatus === "ACCEPTED" || structuredStatus === "REJECTED"
+    ? structuredStatus
+    : parsedOutput?.status;
+  const reason = typeof structuredReason === "string" && structuredReason.trim()
+    ? structuredReason
+    : parsedOutput?.reason;
+
   if (status !== "ACCEPTED" && status !== "REJECTED") {
     throw new VerificationError("contract_record_malformed", "TranscriptVerifier returned an invalid verification status.");
   }
-  if (typeof record.transcript_hash !== "string" || record.transcript_hash.toLowerCase() !== expectedHash.toLowerCase()) {
-    throw new VerificationError("contract_hash_mismatch", "TranscriptVerifier returned a record for a different transcript hash.");
-  }
-  if (typeof record.reason !== "string" || !record.reason.trim()) {
+  if (typeof reason !== "string" || !reason.trim()) {
     throw new VerificationError("contract_reason_missing", "TranscriptVerifier returned no adjudication reason.");
   }
   return {
-    transcriptHash: record.transcript_hash,
+    transcriptHash: returnedHash ?? expectedHash,
     contractStatus: status,
-    reason: record.reason,
-    submittedAt: record.submitted_at ?? null,
+    reason: reason.trim(),
+    submittedAt: typeof record === "object" && !Array.isArray(record) ? (record.submitted_at ?? record.submittedAt ?? null) : null,
   };
 }
 

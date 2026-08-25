@@ -34,6 +34,7 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     },
     getTranscriptVerification: async (transcriptHash) => {
       if (contractMode === "read_failed") throw new Error("temporary RPC read failure");
+      if (transactionMode === "failed") return {};
       return { transcript_hash: transcriptHash, status: contractMode, reason: contractMode === "ACCEPTED" ? "Faithful summary." : "The summary changes a confirmed claim." };
     },
   };
@@ -121,8 +122,12 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     transactionMode = "accepted";
     contractMode = "read_failed";
     const readFailure = await submitSessionVerification(readFailureReady.id, services);
-    assert.equal(readFailure.verification.verificationStatus, "failed");
+    assert.equal(readFailure.verification.verificationStatus, "pending");
     assert.equal(readFailure.verification.retryable, false);
+    await pool.query(
+      "UPDATE verification_attempts SET verification_status = 'failed', error = 'legacy misclassification' WHERE session_id = $1",
+      [readFailureReady.id],
+    );
     const readFailureRetry = await submitSessionVerification(readFailureReady.id, { ...services, getTranscriptVerification: async (hash) => ({ transcript_hash: hash, status: "ACCEPTED", reason: "Recovered read." }) });
     assert.equal(readFailureRetry.verification.verificationStatus, "accepted");
     assert.equal(submissionCount, 4);
