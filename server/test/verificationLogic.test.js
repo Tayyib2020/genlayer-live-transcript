@@ -74,7 +74,9 @@ test("contract ACCEPTED and REJECTED records map only from the contract result",
 });
 
 test("Bradbury decision output is parsed deterministically", () => {
-  assert.equal(mapTransactionState(fixtures.observedProduction.transaction).kind, "ready_to_read");
+  assert.equal(mapTransactionState(fixtures.observedProduction.transaction).kind, "pending");
+  assert.equal(mapTransactionState(fixtures.observedProduction.transaction).finalizationPending, true);
+  assert.equal(mapTransactionState(fixtures.observedPendingProduction.transaction).kind, "pending");
   assert.equal(
     normalizeContractVerification(fixtures.observedProduction.transaction, transcriptHash).contractStatus,
     "ACCEPTED",

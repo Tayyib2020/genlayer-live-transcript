@@ -9,6 +9,17 @@
     },
     "contractResult": "decisionACCEPTED\nThe summary correctly captures the transcript without adding or contradicting facts."
   },
+  "observedPendingProduction": {
+    "transactionHash": "0x1ea54a537f40a9b04cec0f0b76eb8afd5ab74192dc4adc20b441ace9fb5d1797",
+    "contractAddress": "0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B",
+    "transaction": {
+      "statusName": "ACCEPTED",
+      "txExecutionResultName": "FINISHED_WITH_ERROR",
+      "executionError": "decisionACCEPTED\nThe validator explanation confirms the summary is faithful.",
+      "finalizationStatus": "WAITING"
+    },
+    "contractResult": {}
+  },
   "decisionRejected": "decisionREJECTED\nThe summary changes an uncertain statement into a confirmation.",
   "finalizationPending": {
     "statusName": "ACCEPTED",

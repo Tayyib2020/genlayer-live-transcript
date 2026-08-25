@@ -51,12 +51,22 @@ function executionFailureMessage(transactionState, error) {
     : safeVerificationError(error);
 }
 
+function persistedSemanticVerdict(verification) {
+  if (!verification || !["ACCEPTED", "REJECTED"].includes(verification.contractStatus)) return null;
+  if (typeof verification.reason !== "string" || !verification.reason.trim()) return null;
+  return {
+    transcriptHash: verification.transcriptHash,
+    contractStatus: verification.contractStatus,
+    reason: verification.reason,
+    submittedAt: verification.submittedAt ?? null,
+  };
+}
+
 export async function refreshSessionVerification(sessionId, services = {}, userId = null) {
   const transactionReader = services.getTranscriptTransaction ?? getTranscriptTransaction;
   const contractReader = services.getTranscriptVerification ?? getTranscriptVerification;
   const current = await getSessionVerification(sessionId, userId);
   if (!current || !current.transactionHash) return current;
-  if (["accepted", "rejected"].includes(current.verificationStatus)) return current;
 
   let transaction;
   try {
@@ -66,34 +76,54 @@ export async function refreshSessionVerification(sessionId, services = {}, userI
     // A status/RPC read failure is not evidence of a semantic rejection or a
     // failed transaction. Keep the existing transaction and make Refresh
     // retryable; this also recovers records incorrectly marked failed earlier.
+    if (persistedSemanticVerdict(current)) return current;
     await recordVerificationPending(current.id, { transactionStatus: current.transactionStatus ?? "PENDING" });
     return getSessionVerification(sessionId, userId);
   }
 
   const transactionState = mapTransactionState(transaction);
   await recordTransactionStatus(current.id, { transactionStatus: transactionState.status });
-  if (transactionState.kind === "pending") {
+
+  let transactionVerdict = null;
+  try {
+    // The transaction response is authoritative when it contains the
+    // deterministic TranscriptVerifier decision, even before get_verification
+    // is readable after the finalization window.
+    transactionVerdict = normalizeContractVerification(transaction, current.transcriptHash);
+  } catch {
+    // The transaction may contain no semantic output. In that case the
+    // secondary contract read remains the source of the persisted record.
+  }
+
+  const authoritativeVerdict = transactionVerdict ?? persistedSemanticVerdict(current);
+  const finalizationPending = transactionState.finalizationPending;
+
+  if (authoritativeVerdict) {
+    await recordContractVerification(current.id, {
+      ...authoritativeVerdict,
+      finalizationPending,
+    });
+  } else if (transactionState.kind === "pending") {
     await recordVerificationPending(current.id, { transactionStatus: transactionState.status });
     return getSessionVerification(sessionId, userId);
   }
 
   try {
-    let record;
-    try {
-      // Some Bradbury responses expose the authoritative contract return in
-      // an execution-result field. Parse that exact result before falling
-      // back to the persisted contract view.
-      record = normalizeContractVerification(transaction, current.transcriptHash);
-    } catch {
-      record = normalizeContractVerification(
-        await contractReader(current.verificationId),
-        current.transcriptHash,
-      );
+    const record = normalizeContractVerification(
+      await contractReader(current.verificationId),
+      current.transcriptHash,
+    );
+    if (!transactionVerdict || record.contractStatus === transactionVerdict.contractStatus) {
+      await recordContractVerification(current.id, { ...record, finalizationPending });
     }
-    await recordContractVerification(current.id, record);
   } catch (error) {
     logLifecycleError(error, sessionId, current);
-    if (transactionState.finalizationPending || isTransientReadError(error)) {
+    if (authoritativeVerdict) {
+      // Missing or temporarily unavailable get_verification evidence must not
+      // erase a decision already present in the transaction response.
+      return getSessionVerification(sessionId, userId);
+    }
+    if (finalizationPending || isTransientReadError(error)) {
       await recordVerificationPending(current.id, { transactionStatus: transactionState.status });
     } else {
       await recordVerificationFailure(current.id, executionFailureMessage(transactionState, error));

@@ -170,6 +170,8 @@ export default function SessionPage() {
   const canVerify = isCompleted && derivative?.summaryGenerationStatus === "ready" && Boolean(latestSummaryAttempt) && !latestAttemptVerification && !isVerifying;
   const displayedVerification = latestAttemptVerification;
   const verificationStatus = displayedVerification?.verificationStatus ?? "not_started";
+  const semanticVerdictPending = verificationStatus === "pending" && ["ACCEPTED", "REJECTED"].includes(displayedVerification?.contractStatus);
+  const verificationStatusLabel = semanticVerdictPending ? "awaiting finalization" : verificationStatus.replace("_", " ");
   const contractExplorerUrl = displayedVerification?.contractAddress ? `https://explorer-bradbury.genlayer.com/address/${displayedVerification.contractAddress}` : null;
 
   return (
@@ -204,14 +206,16 @@ export default function SessionPage() {
         {summaryAttempts.length > 1 && <div className="summary-attempt-history" aria-label="Summary attempt history"><strong>Summary attempts</strong>{summaryAttempts.map((attempt) => <div className="summary-attempt-row" key={attempt.id}><span>Attempt {attempt.attemptNumber}</span><span>{attempt.summaryGenerationStatus === "ready" ? "Summary Ready" : attempt.summaryGenerationStatus}</span><code>{attempt.summaryHash || "No summary hash"}</code></div>)}</div>}
       </section>
       <section className="derived-panel verification-panel" aria-labelledby="verification-heading">
-        <div className="derived-panel-header"><div><p className="eyebrow">GenLayer Bradbury</p><h2 id="verification-heading">Summary-fidelity verification</h2></div><span className={`derived-status derived-status-${verificationStatus}`}>{verificationStatus.replace("_", " ")}</span></div>
+        <div className="derived-panel-header"><div><p className="eyebrow">GenLayer Bradbury</p><h2 id="verification-heading">Summary-fidelity verification</h2></div><span className={`derived-status derived-status-${verificationStatus}`}>{verificationStatusLabel}</span></div>
         {verificationError && <div className="capture-message capture-message-error" role="alert">{verificationError}</div>}
         {verificationStatus === "not_started" && <>
           <p className="derived-copy">GenLayer verification has not been submitted yet.</p>
           {canVerify && <button className="button button-primary" type="button" onClick={() => void verifySession()}>{latestSummaryAttempt?.attemptNumber > 1 ? "Verify New Summary with GenLayer" : "Verify with GenLayer"}</button>}
           {isCompleted && !derivative?.summary && <p className="derived-copy">Generate a ready summary before submitting verification.</p>}
         </>}
-        {(verificationStatus === "submitting" || verificationStatus === "pending") && <p className="derived-copy loading-copy" role="status" aria-live="polite"><span className="loading-spinner" aria-hidden="true" />{verificationStatus === "submitting" ? "Submitting to GenLayer..." : "Waiting for validator consensus..."}<br />Sending the canonical transcript and generated summary to TranscriptVerifier on Bradbury.</p>}
+        {verificationStatus === "submitting" && <p className="derived-copy loading-copy" role="status" aria-live="polite"><span className="loading-spinner" aria-hidden="true" />Submitting to GenLayer...<br />Sending the canonical transcript and generated summary to TranscriptVerifier on Bradbury.</p>}
+        {verificationStatus === "pending" && !semanticVerdictPending && <p className="derived-copy loading-copy" role="status" aria-live="polite"><span className="loading-spinner" aria-hidden="true" />Waiting for validator consensus...<br />Sending the canonical transcript and generated summary to TranscriptVerifier on Bradbury.</p>}
+        {semanticVerdictPending && <div className={`verification-result verification-result-${displayedVerification.contractStatus.toLowerCase()}`} role="status" aria-live="polite"><strong>GenLayer consensus reached: {displayedVerification.contractStatus}</strong><b>{displayedVerification.contractStatus}</b><p>Awaiting finalization. The semantic verdict is preserved while Bradbury completes its finalization window.</p>{displayedVerification.reason && <p>{displayedVerification.reason}</p>}</div>}
         {verificationStatus === "accepted" && <div className="verification-result verification-result-accepted"><strong>GenLayer Verified</strong><b>ACCEPTED</b><p>GenLayer validators determined that the generated summary faithfully represents the submitted canonical transcript.</p></div>}
         {verificationStatus === "rejected" && <div className="verification-result verification-result-rejected"><strong>Summary Rejected</strong><b>REJECTED</b><p>{displayedVerification.reason || "GenLayer validators determined that the generated summary did not faithfully represent the submitted canonical transcript."}</p></div>}
         {verificationStatus === "failed" && <>

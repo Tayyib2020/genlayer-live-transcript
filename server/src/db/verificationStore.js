@@ -32,6 +32,8 @@ function mapVerification(row) {
     transactionStatus: row.transaction_status,
     verificationStatus: row.verification_status,
     contractStatus: row.contract_status,
+    semanticStatus: row.contract_status ?? "UNKNOWN",
+    finalizationPending: row.verification_status === "pending" && row.transaction_status === "ACCEPTED",
     reason: row.reason,
     submittedAt: row.submitted_at,
     completedAt: row.completed_at,
@@ -245,7 +247,6 @@ export async function recordVerificationPending(targetId, { transactionStatus = 
   const result = await pool.query(
     `UPDATE verification_attempts
         SET verification_status = 'pending', transaction_status = $2,
-            contract_status = NULL, reason = NULL, completed_at = NULL,
             error = NULL, updated_at = NOW()
       WHERE ${target.sql}
         AND transaction_hash IS NOT NULL
@@ -268,17 +269,18 @@ export async function recordVerificationFailure(targetId, message) {
   return mapVerification(result.rows[0]);
 }
 
-export async function recordContractVerification(targetId, { contractStatus, reason, submittedAt }) {
+export async function recordContractVerification(targetId, { contractStatus, reason, submittedAt, finalizationPending = false }) {
   const target = targetWhere(targetId);
   const result = await pool.query(
     `UPDATE verification_attempts
-        SET verification_status = CASE WHEN $2 = 'ACCEPTED' THEN 'accepted' ELSE 'rejected' END,
-            contract_status = $2, reason = $3, completed_at = NOW(),
+        SET verification_status = CASE WHEN $5 THEN 'pending' WHEN $2 = 'ACCEPTED' THEN 'accepted' ELSE 'rejected' END,
+            contract_status = $2, reason = $3,
+            completed_at = CASE WHEN $5 THEN NULL ELSE NOW() END,
             submitted_at = COALESCE(submitted_at, $4::timestamptz), error = NULL,
             updated_at = NOW()
       WHERE ${target.sql}
       RETURNING ${VERIFICATION_COLUMNS}`,
-    [target.values[0], contractStatus, reason, submittedAt],
+    [target.values[0], contractStatus, reason, submittedAt, finalizationPending],
   );
   return mapVerification(result.rows[0]);
 }

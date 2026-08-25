@@ -5,6 +5,7 @@ import { pool } from "../src/db/pool.js";
 import { processCompletedSession } from "../src/db/sessionProcessing.js";
 import {
   getSessionVerification,
+  getSessionVerificationHistory,
 } from "../src/db/verificationStore.js";
 import { submitSessionVerification } from "../src/genlayer/verificationLifecycle.js";
 
@@ -30,10 +31,15 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     getTranscriptTransaction: async () => {
       if (transactionMode === "pending") return { statusName: "PROPOSING" };
       if (transactionMode === "failed") return { statusName: "CANCELED" };
+      if (transactionMode === "accepted_consensus") return { statusName: "ACCEPTED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionACCEPTED\nFaithful summary.", finalizationStatus: "WAITING" };
+      if (transactionMode === "rejected_consensus") return { statusName: "ACCEPTED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionREJECTED\nThe summary changes an uncertain statement.", finalizationStatus: "WAITING" };
+      if (transactionMode === "finalized_semantic_accepted") return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionACCEPTED\nFaithful summary." };
+      if (transactionMode === "finalized_semantic_rejected") return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR", executionError: "decisionREJECTED\nThe summary changes an uncertain statement." };
       return { statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_RETURN" };
     },
     getTranscriptVerification: async (transcriptHash) => {
       if (contractMode === "read_failed") throw new Error("temporary RPC read failure");
+      if (contractMode === "read_empty") return {};
       if (transactionMode === "failed") return {};
       return { transcript_hash: transcriptHash, status: contractMode, reason: contractMode === "ACCEPTED" ? "Faithful summary." : "The summary changes a confirmed claim." };
     },
@@ -104,6 +110,35 @@ test("Phase 7 verification lifecycle and evidence persistence", { skip: !runData
     const duplicate = await submitSessionVerification(ready.id, services);
     assert.equal(duplicate.verification.verificationStatus, "accepted");
     assert.equal(submissionCount, 1);
+
+    const consensusReady = await makeReadySession(`Phase 7 accepted consensus ${crypto.randomUUID()}`, "Consensus has accepted the summary.");
+    transactionMode = "accepted_consensus";
+    contractMode = "read_empty";
+    const consensusPending = await submitSessionVerification(consensusReady.id, services);
+    assert.equal(consensusPending.verification.verificationStatus, "pending");
+    assert.equal(consensusPending.verification.contractStatus, "ACCEPTED");
+    assert.equal(consensusPending.verification.finalizationPending, true);
+    const consensusSubmissionCount = submissionCount;
+    transactionMode = "finalized_semantic_accepted";
+    const consensusFinalized = await submitSessionVerification(consensusReady.id, services);
+    assert.equal(consensusFinalized.verification.verificationStatus, "accepted");
+    assert.equal(consensusFinalized.verification.contractStatus, "ACCEPTED");
+    assert.equal(consensusFinalized.verification.transactionHash, consensusPending.verification.transactionHash);
+    assert.equal(submissionCount, consensusSubmissionCount);
+    const consensusHistory = await getSessionVerificationHistory(consensusReady.id);
+    assert.equal(consensusHistory.length, 1);
+    assert.equal(consensusHistory[0].transactionHash, consensusPending.verification.transactionHash);
+
+    const rejectedConsensusReady = await makeReadySession(`Phase 7 rejected consensus ${crypto.randomUUID()}`, "Consensus has rejected the summary.");
+    transactionMode = "rejected_consensus";
+    contractMode = "read_empty";
+    const rejectedConsensusPending = await submitSessionVerification(rejectedConsensusReady.id, services);
+    assert.equal(rejectedConsensusPending.verification.verificationStatus, "pending");
+    assert.equal(rejectedConsensusPending.verification.contractStatus, "REJECTED");
+    transactionMode = "finalized_semantic_rejected";
+    const rejectedConsensusFinalized = await submitSessionVerification(rejectedConsensusReady.id, services);
+    assert.equal(rejectedConsensusFinalized.verification.verificationStatus, "rejected");
+    assert.equal(rejectedConsensusFinalized.verification.contractStatus, "REJECTED");
 
     const rejectedReady = await makeReadySession(`Phase 7 rejected ${crypto.randomUUID()}`, "The launch date is unconfirmed.");
     contractMode = "REJECTED";

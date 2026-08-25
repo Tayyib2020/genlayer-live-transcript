@@ -130,19 +130,26 @@ function transactionExecutionResult(transaction) {
     ?? (transaction?.txExecutionResult === 1 ? "FINISHED_WITH_RETURN" : transaction?.txExecutionResult === 2 ? "FINISHED_WITH_ERROR" : undefined);
 }
 
-function transactionFinalizationPending(transaction) {
+function transactionFinalizationPending(transaction, status) {
+  if (transaction?.finalized === true || transaction?.isFinalized === true || transaction?.consensus_data?.final === true) return false;
   if (transaction?.finalized === false || transaction?.isFinalized === false || transaction?.consensus_data?.final === false) return true;
   const finalizationStatus = transaction?.finalizationStatus
     ?? transaction?.finalization_status
     ?? transaction?.finalizationState;
-  return typeof finalizationStatus === "string"
-    && PENDING_FINALIZATION_STATES.has(finalizationStatus.trim().toUpperCase());
+  if (typeof finalizationStatus === "string") {
+    const normalized = finalizationStatus.trim().toUpperCase();
+    if (PENDING_FINALIZATION_STATES.has(normalized)) return true;
+    if (["FINALIZED", "COMPLETE", "COMPLETED"].includes(normalized)) return false;
+  }
+  // GenLayer's ACCEPTED state means validator consensus has been reached;
+  // FINALIZED is the separate state after the finalization window.
+  return status === "ACCEPTED";
 }
 
 export function mapTransactionState(transaction) {
   const status = normalizeTransactionStatus(transaction);
   const execution = transactionExecutionResult(transaction);
-  const finalizationPending = transactionFinalizationPending(transaction);
+  const finalizationPending = transactionFinalizationPending(transaction, status);
 
   // Bradbury can report a consensus decision separately from the execution
   // field. In particular, a valid TranscriptVerifier result may be exposed
