@@ -3,7 +3,7 @@ import express from "express";
 import { pool } from "../db/pool.js";
 import { completeSession, deleteSession } from "../db/sessionLifecycle.js";
 import { getSessionDerivative, processCompletedSession, regenerateCompletedSession } from "../db/sessionProcessing.js";
-import { getSessionVerification, getSessionVerificationHistory } from "../db/verificationStore.js";
+import { getSessionVerificationHistory } from "../db/verificationStore.js";
 import { refreshSessionVerification, submitSessionVerification } from "../genlayer/verificationLifecycle.js";
 import { VerificationError, safeVerificationError } from "../genlayer/verificationLogic.js";
 import { listTranscriptSegments } from "../db/transcriptStore.js";
@@ -92,12 +92,14 @@ router.get("/:id", async (request, response, next) => {
   try {
     const result = await pool.query("SELECT * FROM sessions WHERE id = $1 AND user_id = $2", [request.params.id, request.user.id]);
     if (result.rowCount === 0) return response.status(404).json({ error: "Session not found" });
-    const [transcript, derivative, verification, verificationHistory] = await Promise.all([
+    const [transcript, derivative] = await Promise.all([
       listTranscriptSegments(request.params.id),
       getSessionDerivative(request.params.id),
-      getSessionVerification(request.params.id, request.user.id),
-      getSessionVerificationHistory(request.params.id, request.user.id),
     ]);
+    // Reconcile an existing verification transaction during the normal session
+    // load so refreshes use the existing hash and return the latest verdict.
+    const verification = await refreshSessionVerification(request.params.id, {}, request.user.id);
+    const verificationHistory = await getSessionVerificationHistory(request.params.id, request.user.id);
     return response.json({
       session: mapSession(result.rows[0]),
       transcript,
