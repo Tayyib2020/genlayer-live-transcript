@@ -70,7 +70,13 @@ export async function refreshSessionVerification(sessionId, services = {}, userI
 
   let transaction;
   try {
-    transaction = await transactionReader(current.transactionHash);
+    transaction = await transactionReader(current.transactionHash, {
+      sessionId,
+      verificationAttemptId: current.id,
+      verificationAttemptNumber: current.summaryAttemptNumber,
+      network: current.network,
+      contractAddress: current.contractAddress,
+    });
   } catch (error) {
     logLifecycleError(error, sessionId, current);
     // A status/RPC read failure is not evidence of a semantic rejection or a

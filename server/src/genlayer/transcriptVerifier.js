@@ -9,6 +9,30 @@ import {
 
 const DEFAULT_CONTRACT_ADDRESS = "0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B";
 const SUPPORTED_NETWORK = "testnet-bradbury";
+const READ_OPERATION = "READ_EXISTING_TRANSACTION";
+const WRITE_OPERATION = "SUBMIT_NEW_TRANSACTION";
+const DIAGNOSTIC_OUTPUT_FIELDS = [
+  "output",
+  "returnValue",
+  "return_value",
+  "contractOutput",
+  "contract_output",
+  "executionError",
+  "execution_error",
+  "outputData",
+  "output_data",
+  "executionOutput",
+  "execution_output",
+  "returnData",
+  "return_data",
+  "consensus_data",
+  "consensusData",
+  "leader_receipt",
+  "leaderReceipt",
+  "readable",
+  "result",
+  "value",
+];
 
 function getConfig() {
   return {
@@ -53,6 +77,167 @@ function normalizeTransactionHash(value) {
   return hash;
 }
 
+function sanitizeDiagnosticText(value) {
+  if (value === null || value === undefined) return undefined;
+  return String(value)
+    .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
+    .replace(/(authorization|cookie|set-cookie|api[_-]?key|private[_ -]?key|database[_ -]?url|password|secret|token)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/[?&](key|token|password|secret|api_key|access_token)=[^&\s]+/gi, "?$1=[redacted]")
+    .slice(0, 500);
+}
+
+function isEmptyOrNotFound(value) {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value !== "object") return ["NOT_FOUND", "NOTFOUND", "NOT FOUND"].includes(String(value).trim().toUpperCase());
+  if (Object.keys(value).length === 0) return true;
+  return [value.status, value.statusName, value.code, value.errorCode, value.result, value.error?.code, value.error?.status]
+    .some((candidate) => typeof candidate === "string" && ["NOT_FOUND", "NOTFOUND", "NOT FOUND"].includes(candidate.trim().toUpperCase()));
+}
+
+function isNotFoundError(error) {
+  return [
+    error?.code,
+    error?.error?.code,
+    error?.cause?.code,
+    error?.response?.data?.error?.code,
+    error?.message,
+  ].some((candidate) => typeof candidate === "string" && /(?:NOT[_ ]FOUND|NOTFOUND|TRANSACTION.*NOT.*FOUND)/i.test(candidate));
+}
+
+function findDiagnosticOutput(value, depth = 0) {
+  if (typeof value === "string") {
+    const match = value.trim().match(/^decision(ACCEPTED|REJECTED)(?:\r?\n|$)/);
+    return match?.[1] ?? null;
+  }
+  if (!value || typeof value !== "object" || depth > 4) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const marker = findDiagnosticOutput(item, depth + 1);
+      if (marker) return marker;
+    }
+    return null;
+  }
+  for (const field of DIAGNOSTIC_OUTPUT_FIELDS) {
+    if (!(field in value)) continue;
+    const marker = findDiagnosticOutput(value[field], depth + 1);
+    if (marker) return marker;
+  }
+  return null;
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function diagnosticScalar(value) {
+  if (typeof value === "boolean" || typeof value === "number") return value;
+  return typeof value === "string" ? sanitizeDiagnosticText(value) : undefined;
+}
+
+function diagnosticTransactionFields(transaction) {
+  if (isEmptyOrNotFound(transaction)) {
+    return {
+      transactionReadResult: "not_found",
+      transactionStatus: undefined,
+      consensusStatus: undefined,
+      pendingAction: undefined,
+      finalizationState: undefined,
+      semanticOutputMarker: "none",
+    };
+  }
+  const consensusStatus = firstDefined(
+    transaction?.storedConsensus,
+    transaction?.stored_consensus,
+    transaction?.consensusStatus,
+    transaction?.consensus_status,
+    transaction?.consensusState,
+    transaction?.consensus_data?.status,
+    transaction?.consensus_data?.resultName,
+    transaction?.resultName,
+  );
+  const pendingAction = firstDefined(
+    transaction?.pendingAction,
+    transaction?.pending_action,
+    transaction?.consensus_data?.pendingAction,
+    transaction?.consensus_data?.pending_action,
+    transaction?.data?.pendingAction,
+    transaction?.data?.pending_action,
+  );
+  const finalizationState = firstDefined(
+    transaction?.finalizationStatus,
+    transaction?.finalization_status,
+    transaction?.finalizationState,
+    transaction?.finalized,
+    transaction?.isFinalized,
+    transaction?.consensus_data?.final,
+  );
+  return {
+    transactionReadResult: "ok",
+    transactionStatus: diagnosticScalar(firstDefined(transaction?.statusName, transaction?.status)),
+    consensusStatus: diagnosticScalar(consensusStatus),
+    pendingAction: diagnosticScalar(pendingAction),
+    finalizationState: diagnosticScalar(finalizationState),
+    semanticOutputMarker: findDiagnosticOutput(transaction) ?? "none",
+  };
+}
+
+function nestedErrorValue(error, field) {
+  return firstDefined(
+    error?.[field],
+    error?.error?.[field],
+    error?.cause?.[field],
+    error?.response?.[field],
+    error?.response?.data?.[field],
+    error?.response?.data?.error?.[field],
+    error?.cause?.response?.data?.error?.[field],
+  );
+}
+
+export function buildTransactionReadDiagnostic({ transactionHash, transaction, error, context = {}, config, timestamp = new Date().toISOString() }) {
+  const transactionFields = error ? {
+    transactionReadResult: isNotFoundError(error) ? "not_found" : "error",
+    transactionStatus: undefined,
+    consensusStatus: undefined,
+    pendingAction: undefined,
+    finalizationState: undefined,
+    semanticOutputMarker: "none",
+  } : diagnosticTransactionFields(transaction);
+  const diagnostic = {
+    operation: READ_OPERATION,
+    sessionId: context.sessionId,
+    verificationAttemptId: context.verificationAttemptId,
+    verificationAttemptNumber: context.verificationAttemptNumber,
+    transactionHash,
+    network: config?.network ?? context.network,
+    contractAddress: config?.contractAddress ?? context.contractAddress,
+    timestamp,
+    getTransactionSucceeded: !error,
+    ...transactionFields,
+  };
+  if (error) {
+    diagnostic.rpcErrorName = sanitizeDiagnosticText(firstDefined(error?.name, error?.error?.name, error?.cause?.name));
+    diagnostic.rpcErrorCode = sanitizeDiagnosticText(nestedErrorValue(error, "code"));
+    diagnostic.rpcErrorMessage = sanitizeDiagnosticText(firstDefined(
+      error?.message,
+      error?.error?.message,
+      error?.cause?.message,
+      error?.response?.data?.error?.message,
+    ));
+    const httpStatus = nestedErrorValue(error, "status") ?? nestedErrorValue(error, "statusCode");
+    if (httpStatus !== undefined) diagnostic.httpStatus = httpStatus;
+    const retryable = firstDefined(error?.retryable, error?.cause?.retryable, error?.response?.retryable);
+    if (typeof retryable === "boolean") diagnostic.retryable = retryable;
+  }
+  return diagnostic;
+}
+
+export function logTransactionReadDiagnostic({ transactionHash, transaction, error, context = {}, config, logger = console, timestamp }) {
+  const diagnostic = buildTransactionReadDiagnostic({ transactionHash, transaction, error, context, config, timestamp });
+  (error ? logger.error : logger.info)("GenLayer verification transaction read", diagnostic);
+  return diagnostic;
+}
+
 export async function submitTranscriptVerification({ transcript, summary, transcriptHash, verificationId = transcriptHash, useAttemptIdentity = false }) {
   const args = buildVerificationSubmissionArgs({ transcript, summary, transcriptHash });
   const { client, config } = getClient();
@@ -72,6 +257,7 @@ export async function submitTranscriptVerification({ transcript, summary, transc
       value: 0n,
     }));
     console.info("GenLayer verification submitted", {
+      operation: WRITE_OPERATION,
       network: config.network,
       contractAddress: config.contractAddress,
       transactionHash,
@@ -112,18 +298,14 @@ export async function getTranscriptVerification(transcriptHash) {
   }
 }
 
-export async function getTranscriptTransaction(transactionHash) {
+export async function getTranscriptTransaction(transactionHash, context = {}) {
   const { client, config } = getClient({ requireAccount: false });
   try {
-    return await client.getTransaction({ hash: transactionHash });
+    const transaction = await client.getTransaction({ hash: transactionHash });
+    logTransactionReadDiagnostic({ transactionHash, transaction, context, config });
+    return transaction;
   } catch (error) {
-    console.error("GenLayer transaction read failed", {
-      code: error?.code ?? "genlayer_transaction_read_failed",
-      message: safeVerificationError(error),
-      contractAddress: config.contractAddress,
-      network: config.network,
-      transactionHash,
-    });
+    logTransactionReadDiagnostic({ transactionHash, error, context, config });
     throw new VerificationError("genlayer_transaction_read_failed", "The GenLayer transaction status could not be read.");
   }
 }
