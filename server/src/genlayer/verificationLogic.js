@@ -38,6 +38,8 @@ const RECOVERABLE_TRANSACTION_STATES = new Set([
   "LEADER_TIMEOUT",
 ]);
 
+const FINALIZED_OUTCOME_PROCESSING_STATUS = "FINALIZED_PROCESSING_OUTCOME";
+
 const PENDING_FINALIZATION_STATES = new Set([
   "PENDING",
   "WAITING",
@@ -144,6 +146,33 @@ function transactionExecutionResult(transaction) {
     ?? (transaction?.txExecutionResult === 1 ? "FINISHED_WITH_RETURN" : transaction?.txExecutionResult === 2 ? "FINISHED_WITH_ERROR" : undefined);
 }
 
+function transactionPendingAction(transaction) {
+  const action = transaction?.pendingAction
+    ?? transaction?.pending_action
+    ?? transaction?.consensus_data?.pendingAction
+    ?? transaction?.consensus_data?.pending_action
+    ?? transaction?.data?.pendingAction
+    ?? transaction?.data?.pending_action;
+  return typeof action === "string" ? action.trim().toLowerCase() : null;
+}
+
+function transactionStoredConsensus(transaction) {
+  const consensus = transaction?.storedConsensus
+    ?? transaction?.stored_consensus
+    ?? transaction?.consensusStatus
+    ?? transaction?.consensus_status
+    ?? transaction?.consensusResult
+    ?? transaction?.consensus_result
+    ?? transaction?.resultName;
+  return typeof consensus === "string" ? consensus.trim().toUpperCase() : null;
+}
+
+function isFinalizedOutcomeProcessing(transaction, status) {
+  if (status !== "FINALIZED" || transactionPendingAction(transaction) !== "process_consensus_outcome") return false;
+  const storedConsensus = transactionStoredConsensus(transaction);
+  return storedConsensus === null || ["UNDETERMINED", "UNKNOWN", "IDLE"].includes(storedConsensus);
+}
+
 function transactionFinalizationPending(transaction, status) {
   if (transaction?.finalized === true || transaction?.isFinalized === true || transaction?.consensus_data?.final === true) return false;
   if (transaction?.finalized === false || transaction?.isFinalized === false || transaction?.consensus_data?.final === false) return true;
@@ -164,6 +193,19 @@ export function mapTransactionState(transaction) {
   const status = normalizeTransactionStatus(transaction);
   const execution = transactionExecutionResult(transaction);
   const finalizationPending = transactionFinalizationPending(transaction, status);
+  const pendingAction = transactionPendingAction(transaction);
+
+  if (isFinalizedOutcomeProcessing(transaction, status)) {
+    return {
+      kind: "pending",
+      status,
+      lifecycleStatus: FINALIZED_OUTCOME_PROCESSING_STATUS,
+      execution,
+      finalizationPending: false,
+      outcomeProcessingPending: true,
+      pendingAction,
+    };
+  }
 
   // Bradbury can report a consensus decision separately from the execution
   // field. In particular, a valid TranscriptVerifier result may be exposed

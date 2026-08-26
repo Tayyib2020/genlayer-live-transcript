@@ -107,6 +107,11 @@ test("pending and failed transaction states remain distinct from semantic verdic
   assert.equal(mapTransactionState({ statusName: "PROPOSING" }).kind, "pending");
   assert.equal(mapTransactionState(fixtures.appealRecoveryProduction.intermediateTransaction).kind, "pending");
   assert.equal(mapTransactionState(fixtures.appealRecoveryProduction.intermediateTransaction).recoverable, true);
+  const outcomeProcessing = mapTransactionState(fixtures.finalizedOutcomeProcessing.transaction);
+  assert.equal(outcomeProcessing.kind, "pending");
+  assert.equal(outcomeProcessing.lifecycleStatus, "FINALIZED_PROCESSING_OUTCOME");
+  assert.equal(outcomeProcessing.outcomeProcessingPending, true);
+  assert.equal(outcomeProcessing.finalizationPending, false);
   assert.equal(mapTransactionState({ statusName: "CANCELED" }).kind, "failed");
   assert.equal(mapTransactionState({ statusName: "FINALIZED", txExecutionResultName: "FINISHED_WITH_ERROR" }).kind, "failed");
   assert.equal(

@@ -37,6 +37,14 @@
     },
     "contractResult": {}
   },
+  "finalizedOutcomeProcessing": {
+    "transaction": {
+      "statusName": "FINALIZED",
+      "storedConsensus": "undetermined",
+      "pendingAction": "process_consensus_outcome"
+    },
+    "contractResult": {}
+  },
   "decisionRejected": "decisionREJECTED\nThe summary changes an uncertain statement into a confirmation.",
   "finalizationPending": {
     "statusName": "ACCEPTED",

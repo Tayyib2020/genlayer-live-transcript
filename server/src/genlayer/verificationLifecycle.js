@@ -82,7 +82,8 @@ export async function refreshSessionVerification(sessionId, services = {}, userI
   }
 
   const transactionState = mapTransactionState(transaction);
-  await recordTransactionStatus(current.id, { transactionStatus: transactionState.status });
+  const transactionStatus = transactionState.lifecycleStatus ?? transactionState.status;
+  await recordTransactionStatus(current.id, { transactionStatus });
 
   let transactionVerdict = null;
   try {
@@ -103,8 +104,8 @@ export async function refreshSessionVerification(sessionId, services = {}, userI
       ...authoritativeVerdict,
       finalizationPending,
     });
-  } else if (transactionState.kind === "pending") {
-    await recordVerificationPending(current.id, { transactionStatus: transactionState.status });
+  } else if (transactionState.kind === "pending" && !transactionState.outcomeProcessingPending) {
+    await recordVerificationPending(current.id, { transactionStatus });
     return getSessionVerification(sessionId, userId);
   }
 
@@ -117,14 +118,18 @@ export async function refreshSessionVerification(sessionId, services = {}, userI
       await recordContractVerification(current.id, { ...record, finalizationPending });
     }
   } catch (error) {
+    if (transactionState.outcomeProcessingPending && error?.code === "contract_record_missing") {
+      await recordVerificationPending(current.id, { transactionStatus });
+      return getSessionVerification(sessionId, userId);
+    }
     logLifecycleError(error, sessionId, current);
     if (authoritativeVerdict) {
       // Missing or temporarily unavailable get_verification evidence must not
       // erase a decision already present in the transaction response.
       return getSessionVerification(sessionId, userId);
     }
-    if (finalizationPending || isTransientReadError(error)) {
-      await recordVerificationPending(current.id, { transactionStatus: transactionState.status });
+    if (finalizationPending || transactionState.outcomeProcessingPending || isTransientReadError(error)) {
+      await recordVerificationPending(current.id, { transactionStatus });
     } else {
       await recordVerificationFailure(current.id, executionFailureMessage(transactionState, error));
     }
