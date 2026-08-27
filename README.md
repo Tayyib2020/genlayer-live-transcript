@@ -10,6 +10,10 @@ Browser tab audio → Deepgram live transcription → persisted finalized segmen
 
 The application does not claim that the transcript is factually true. TranscriptVerifier evaluates whether the generated summary faithfully represents the supplied canonical transcript.
 
+## Live Demo
+
+[https://signal-ledger-livee.netlify.app](https://signal-ledger-livee.netlify.app)
+
 ## What is implemented
 
 | Area | Status | Evidence |
@@ -265,11 +269,11 @@ npm run dev
 
 The client runs at `http://localhost:5173`; the API runs at `http://localhost:3001`.
 
-Open `http://localhost:5173`, create an account at **Create an account**, and sign in. Set `CLIENT_ORIGIN` to the exact frontend origin. For production, keep `CLIENT_ORIGIN=https://signalledgertranscript.netlify.app`, set `NODE_ENV=production`, and provide the same root `.env` variables on Render. Do not place server credentials or `AUTH_SESSION_TTL_DAYS` secrets on Netlify; Netlify only needs its existing API/WS frontend environment variables.
+Open `http://localhost:5173`, create an account at **Create an account**, and sign in. Set `CLIENT_ORIGIN` to the exact frontend origin. For production, keep `CLIENT_ORIGIN=https://signal-ledger-livee.netlify.app`, set `NODE_ENV=production`, and provide the same root `.env` variables on Render. Do not place server credentials or `AUTH_SESSION_TTL_DAYS` secrets on Netlify; Netlify only needs its existing API/WS frontend environment variables.
 
 ### Production deployment settings
 
-On Render, configure the server environment with `NODE_ENV=production`, `CLIENT_ORIGIN=https://signalledgertranscript.netlify.app`, `AUTH_SESSION_TTL_DAYS=7`, the hosted Neon `DATABASE_URL`, provider credentials, and the existing server-side GenLayer variables. Run `npm run migrate` once against Neon before starting the service.
+On Render, configure the server environment with `NODE_ENV=production`, `CLIENT_ORIGIN=https://signal-ledger-livee.netlify.app`, `AUTH_SESSION_TTL_DAYS=7`, the hosted Neon `DATABASE_URL`, provider credentials, and the existing server-side GenLayer variables. Run `npm run migrate` once against Neon before starting the service.
 
 On Netlify, keep the existing SPA build and set only the frontend connection variables:
 
