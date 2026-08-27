@@ -14,6 +14,76 @@ The application does not claim that the transcript is factually true. Transcript
 
 [https://signal-ledger-livee.netlify.app](https://signal-ledger-livee.netlify.app)
 
+## TranscriptVerifier Intelligent Contract
+
+Signal Ledger uses the deployed TranscriptVerifier V2 Intelligent Contract to
+have GenLayer validators judge whether the generated summary faithfully
+represents the exact canonical transcript.
+
+- Network: `GenLayer Bradbury` (`testnet-bradbury`)
+- Contract: `0x4DEfE1bbE75C59FcD2264EaCb75096f3CD659f5B`
+- Bundled exact source: `contracts/transcript_verifier.py`
+- Authoritative standalone source: [Tayyib2020/transcript-verifier](https://github.com/Tayyib2020/transcript-verifier/blob/main/contracts/transcript_verifier.py)
+
+### Application → Contract Mapping
+
+| Signal Ledger operation | Application source | TranscriptVerifier public method |
+| --- | --- | --- |
+| First verification | `server/src/genlayer/verificationLifecycle.js:submitSessionVerification` → `server/src/genlayer/transcriptVerifier.js:submitTranscriptVerification` | `submit_verification(transcript, proposed_summary, transcript_hash)` |
+| Later verification attempt | `server/src/genlayer/verificationLifecycle.js:submitSessionVerification` → `server/src/genlayer/transcriptVerifier.js:submitTranscriptVerification` with `useAttemptIdentity` | `submit_verification_attempt(transcript, proposed_summary, transcript_hash, verification_id)` |
+| Verification result read | `server/src/genlayer/verificationLifecycle.js:refreshSessionVerification` → `server/src/genlayer/transcriptVerifier.js:getTranscriptVerification` | `get_verification(transcript_hash)` |
+
+The integration selects the first two write methods through the
+`functionName` branch in `server/src/genlayer/transcriptVerifier.js`. It uses
+`writeContract` for submission, `getTransaction` for transaction lifecycle
+reads, and `readContract` for the stored semantic verification record.
+
+### Contract audit map
+
+The bundled source makes the steward-review path directly inspectable:
+
+- Persistent state: `TranscriptVerifier.verifications`, a
+  `TreeMap[str, VerificationRecord]`; each record includes the transcript hash,
+  summary hash, decision, validator reason, submission time, and submitter.
+- Public methods: `submit_verification`, `submit_verification_attempt`,
+  `get_verification`, and `has_successful_verification`.
+- Validator prompt/instructions: `_build_evaluation_prompt`, including the
+  semantic fidelity, fabrication, context, and certainty requirements.
+- Equivalence Principle logic: `_submit_verification` defines `leader_fn` and
+  `validator_fn`, invokes `gl.vm.run_nondet_unsafe`, validates both JSON
+  evaluations, and compares the stable `decision` field while allowing
+  validator reasons to differ.
+- ACCEPTED/REJECTED decision logic: `_is_valid_evaluation` accepts only the
+  exact `ACCEPTED` or `REJECTED` values with a non-empty reason; the selected
+  decision is stored in `VerificationRecord.status`.
+- Validator reason: the validated `evaluation["reason"]` is stored in
+  `VerificationRecord.reason` and returned by `get_verification`.
+- Verification storage: `_submit_verification` writes the record to
+  `self.verifications` under the normalized transcript or attempt identity.
+- Verification retrieval: `get_verification` reads the stored record and
+  returns its identity, hashes, summary, status, reason, timestamp, and
+  submitter.
+
+### Verification lifecycle
+
+```text
+Canonical transcript
+        ↓
+Generated summary
+        ↓
+TranscriptVerifier Intelligent Contract
+        ↓
+GenLayer validators evaluate summary fidelity
+        ↓
+Equivalence Principle / validator consensus
+        ↓
+ACCEPTED or REJECTED + reason
+        ↓
+Persistent verification record
+        ↓
+Signal Ledger reads and displays the result
+```
+
 ## What is implemented
 
 | Area | Status | Evidence |
@@ -361,6 +431,8 @@ Do not claim a live summary-provider request passed unless `SUMMARY_PROVIDER` an
 
 ```text
 genlayer-live-transcript/
+├── contracts/
+│   └── transcript_verifier.py
 ├── client/src/
 │   ├── components/TranscriptPanel.jsx
 │   ├── pages/LiveSessionPage.jsx
